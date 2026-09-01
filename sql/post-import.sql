@@ -3,17 +3,18 @@
 -- has to happen while nothing else is writing.
 
 -- Every key is searchable; what these rules exclude is *value* indexing, for
--- keys whose values are free text or near-unique. Indexing those costs far more
--- than it buys: on the Slovakia extract, values for every key make the index
--- 333 MB against 65 MB with these rules and 22 MB for a hand-kept allowlist —
--- and `ref:minvskaddress` alone contributes 1.5 M distinct terms nobody will
--- ever search for.
+-- keys whose values are free text or near-unique. What that saves, and what it
+-- costs, is in "Data model" in the README — the numbers live there only.
 --
 -- The API reads these at startup and applies the same rules when it decides
 -- between an index lookup and a recheck, so this is the one place to change.
-CREATE OR REPLACE FUNCTION fm_value_index_rules(
-  OUT deny_patterns text[], OUT max_length int
-) LANGUAGE sql IMMUTABLE PARALLEL SAFE
+--
+-- Two zero-argument functions rather than one with OUT parameters: `fm_kv`
+-- reads them per row, and only this shape folds to a constant at plan time.
+-- Behind a record they need a lateral join, and the 45 LIKE patterns are then
+-- recompiled for every tag — measured at a fifth of the column's build time.
+CREATE OR REPLACE FUNCTION fm_value_deny_patterns() RETURNS text[]
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS $$
   SELECT ARRAY[
     'name%', '%_name', '%:name', 'addr:%', 'ref', 'ref:%', '%:ref',

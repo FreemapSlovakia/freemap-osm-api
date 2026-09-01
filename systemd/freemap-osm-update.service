@@ -14,7 +14,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=freemap
+# Owns the data; the API's user only reads.
+User=osm
 WorkingDirectory=/opt/freemap-osm-api
 EnvironmentFile=/etc/freemap-osm-api.conf
 # --max-diff-size caps one pass, so a long outage catches up over several runs

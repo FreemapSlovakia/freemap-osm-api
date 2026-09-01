@@ -190,33 +190,52 @@ PostgreSQL 18 and PostGIS 3.x are already on the box; the cluster lives on
 
 ```sh
 sudo -u postgres mkdir -p /fm/data4/pg_osm && sudo chown postgres: /fm/data4/pg_osm
+# A system user of the same name, so import and replication reach the database
+# by peer auth over the socket with no password anywhere.
+sudo useradd --system --home-dir /fm/data4/osm-import --shell /usr/sbin/nologin osm
+sudo mkdir -p /fm/data4/osm-import && sudo chown osm: /fm/data4/osm-import
+
+sudo mkdir -p /fm/data4/pg_osm && sudo chown postgres: /fm/data4/pg_osm
+sudo chmod 700 /fm/data4/pg_osm
+
 sudo -u postgres psql <<'SQL'
 CREATE TABLESPACE osm_ts LOCATION '/fm/data4/pg_osm';
 CREATE ROLE osm LOGIN;
 CREATE DATABASE osm OWNER osm TABLESPACE osm_ts;
 SQL
 sudo -u postgres psql -d osm -c 'CREATE EXTENSION postgis'
-# The API only reads.
+# The service runs as `freemap`, like photon, and only reads.
 sudo -u postgres psql -d osm <<'SQL'
-CREATE ROLE osmapi LOGIN;
-GRANT CONNECT ON DATABASE osm TO osmapi;
-GRANT USAGE ON SCHEMA public TO osmapi;
+GRANT CONNECT ON DATABASE osm TO freemap;
+GRANT USAGE ON SCHEMA public TO freemap;
 ALTER DEFAULT PRIVILEGES FOR ROLE osm IN SCHEMA public
-  GRANT SELECT ON TABLES TO osmapi;
+  GRANT SELECT ON TABLES TO freemap;
 SQL
 ```
 
 ### The region (Europe import only)
 
-The polygon the locator keeps objects inside. `freemap-outdoor-map` already has
-the one the renderer uses, so the API's coverage matches the map's:
+The polygon the locator keeps objects inside. Use the **extract's own
+boundary**: every part of it is then fully populated by the import, and the
+updates add nothing the import would not have had.
 
 ```sh
-ogr2ogr -f PostgreSQL PG:"dbname=osm" limit-europe-buffered.geojson \
-  -nln fm_region -nlt PROMOTE_TO_MULTI -t_srs EPSG:4326 -overwrite
-sudo -u osm psql -d osm -c \
-  "CREATE INDEX ON fm_region USING gist (wkb_geometry)"
+cd /fm/data4/osm-import
+sudo -u osm wget -O europe.poly https://download.geofabrik.de/europe.poly
+sudo -u osm python3 /opt/freemap-osm-api/osm2pgsql/poly2wkt.py europe.poly \
+  > /tmp/europe.wkt
+sudo -u osm psql -d osm \
+  -c "CREATE TABLE fm_region (geom geometry(MultiPolygon, 4326))" \
+  -c "\copy fm_region (geom) FROM /tmp/europe.wkt" \
+  -c "CREATE INDEX ON fm_region USING gist (geom)"
 ```
+
+`freemap-outdoor-map`'s `limit-europe-buffered.geojson` is the wrong polygon
+for this even though it is the same idea: 11% of it lies outside the Geofabrik
+extract, where the import leaves nothing and edits would trickle in one object
+at a time, and it drops 13% of the extract that was downloaded anyway. It cuts
+what the renderer draws, which is a different question from where data exists.
+Narrowing the region later is free; widening it needs a re-import.
 
 ### Import
 
@@ -226,7 +245,7 @@ wget https://download.geofabrik.de/europe-latest.osm.pbf     # or planet-latest.
 
 # Unset for a planet import; the locator is what keeps foreign objects out of
 # an extract that takes the planet's diffs.
-export FM_REGION_QUERY="SELECT 'europe', wkb_geometry FROM fm_region"
+export FM_REGION_QUERY="SELECT 'europe', geom FROM fm_region"
 
 sudo -u osm -E osm2pgsql -d osm --output=flex \
   --style /opt/freemap-osm-api/osm2pgsql/freemap-osm.lua \
@@ -252,7 +271,7 @@ makes it use the database's own timestamp, rolled back that far:
 sudo -u osm osm2pgsql-replication init -d osm \
   --server https://planet.openstreetmap.org/replication/minute --start-at 180
 
-echo 'FM_REGION_QUERY=SELECT '"'"'europe'"'"', wkb_geometry FROM fm_region' \
+echo "FM_REGION_QUERY=SELECT 'europe', geom FROM fm_region" \
   | sudo tee -a /etc/freemap-osm-api.conf
 
 sudo cp systemd/freemap-osm-update.* /etc/systemd/system/
@@ -278,7 +297,7 @@ sudo -u freemap bash -c 'cd /opt/freemap-osm-api && pnpm install && pnpm build'
 sudo tee /etc/freemap-osm-api.conf <<'CONF'
 PGHOST=/var/run/postgresql
 PGDATABASE=osm
-PGUSER=osmapi
+PGUSER=freemap
 HTTP_HOST=127.0.0.1
 HTTP_PORT=3010
 LOG_LEVEL=info

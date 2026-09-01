@@ -30,35 +30,43 @@ export async function queryJson(
  * live in one place (fm_value_index_rules in sql/post-import.sql). A predicate
  * on a value outside them is answered by a recheck, not refused.
  */
-export type ValueIndexRules = { denied: RegExp[]; maxLength: number };
+type ValueIndexRules = { denied: RegExp[]; maxLength: number };
 
 let valueIndexRules: ValueIndexRules | undefined;
 
-/** A `LIKE` pattern as a whole-string regex; only `%` is a wildcard here. */
+/**
+ * A `LIKE` pattern as a whole-string regex, with both of `LIKE`'s wildcards:
+ * `%` for any run of characters, `_` for exactly one. Missing the second would
+ * make `%_name` and `check_date%` deny a different set of keys here than they
+ * do in `fm_kv`, and the API would then ask the index for entries it never got.
+ */
 function likeToRegExp(pattern: string): RegExp {
   return new RegExp(
-    `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('%', '.*')}$`,
+    `^${pattern
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/[%_]/g, (wildcard) => (wildcard === '%' ? '.*' : '.'))}$`,
   );
 }
 
-export async function loadValueIndexRules(): Promise<ValueIndexRules> {
+export async function loadValueIndexRules(): Promise<void> {
   const { rows } = await pool.query<{
     deny_patterns: string[];
     max_length: number;
-  }>('SELECT * FROM fm_value_index_rules()');
+  }>(
+    `SELECT fm_value_deny_patterns() AS deny_patterns,
+            fm_max_value_length() AS max_length`,
+  );
 
   const row = rows[0];
 
   if (!row) {
-    throw new Error('fm_value_index_rules() returned nothing');
+    throw new Error('fm_value_deny_patterns() returned nothing');
   }
 
   valueIndexRules = {
     denied: row.deny_patterns.map(likeToRegExp),
     maxLength: row.max_length,
   };
-
-  return valueIndexRules;
 }
 
 /** Whether `kv` holds this pair, or the query has to recheck the tags. */

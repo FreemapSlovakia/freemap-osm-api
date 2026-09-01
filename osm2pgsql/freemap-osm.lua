@@ -11,7 +11,8 @@
 --
 --   FM_REGION_QUERY="SELECT 'europe', geom FROM fm_region"
 --
--- The query returns (name, geometry in WGS84). Needs osm2pgsql 2.2+.
+-- The query returns (name, geometry in WGS84); the README loads the extract's
+-- own .poly into that table. Needs osm2pgsql 2.2+.
 local region_query = os.getenv('FM_REGION_QUERY')
 
 local region

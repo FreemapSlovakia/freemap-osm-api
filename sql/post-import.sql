@@ -26,7 +26,25 @@ AS $$
     'source%', 'attribution', 'operator%', 'brand:%', 'ele',
     'height', 'width', 'capacity%', 'population', 'start_date',
     'end_date', 'inscription', 'check_date%', 'survey:date', '%:date'
-  ], 40
+  ]
+$$;
+
+-- Beyond this a value is free text whatever its key.
+CREATE OR REPLACE FUNCTION fm_max_value_length() RETURNS int
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $$
+  SELECT 40
+$$;
+
+-- How a tag value becomes searchable terms: semicolon lists exploded, trimmed,
+-- lowercased, empties dropped. The index and the recheck below both go through
+-- this, so a predicate cannot mean one thing at import and another at query.
+CREATE OR REPLACE FUNCTION fm_tag_values(value text) RETURNS SETOF text
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $$
+  SELECT lower(btrim(part))
+  FROM unnest(string_to_array(value, ';')) AS part
+  WHERE btrim(part) <> ''
 $$;
 
 -- `kv` holds a bare `key` element per key plus a `key=value` element per
@@ -45,27 +63,24 @@ AS $$
   CROSS JOIN LATERAL (
     SELECT t.key AS entry
     UNION ALL
-    SELECT t.key || '=' || lower(btrim(part))
-    FROM unnest(string_to_array(t.value, ';')) AS part,
-         LATERAL fm_value_index_rules() AS r
-    WHERE btrim(part) <> ''
-      AND NOT (t.key LIKE ANY (r.deny_patterns))
-      -- The cap is on the entry as stored, so whitespace does not count
-      -- towards it; a longer value is answered by a recheck instead.
-      AND length(btrim(part)) <= r.max_length
+    SELECT t.key || '=' || part
+    FROM fm_tag_values(t.value) AS part
+    -- The cap is on the entry as stored, so whitespace does not count towards
+    -- it; a longer value is answered by a recheck instead. Tested before the
+    -- patterns because it is one comparison against forty-five.
+    WHERE length(part) <= fm_max_value_length()
+      AND NOT (t.key LIKE ANY (fm_value_deny_patterns()))
   ) AS e
 $$;
 
--- Answers a value predicate the index cannot: the same normalisation as fm_kv,
--- run against the row's own tags. Always ANDed with an indexed key test, so it
--- is a recheck over few rows rather than a scan.
+-- Answers a value predicate the index cannot, against the row's own tags.
+-- Always ANDed with an indexed key test, so it is a recheck over few rows
+-- rather than a scan.
 CREATE OR REPLACE FUNCTION fm_tag_matches(tags jsonb, key text, value text)
   RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
 AS $$
   SELECT EXISTS (
-    SELECT 1
-    FROM unnest(string_to_array(tags ->> key, ';')) AS part
-    WHERE lower(btrim(part)) = value
+    SELECT 1 FROM fm_tag_values(tags ->> key) AS part WHERE part = value
   )
 $$;
 

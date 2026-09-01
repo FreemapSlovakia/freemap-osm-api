@@ -1,7 +1,7 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { queryJson } from '../db.js';
-import { FilterError, Params } from '../predicates.js';
+import { FilterError, isValidKey, Params } from '../predicates.js';
 import { FeaturesAtResponseSchema } from '../schemas.js';
 import { featureJson, metersPerUnit } from '../sql.js';
 
@@ -138,8 +138,6 @@ export const featuresAtRoute: FastifyPluginAsyncZod = async (app) => {
   });
 };
 
-const KEY_RE = /^[a-zA-Z0-9_:.-]+$/;
-
 function parseKeys(keys: string): string[] {
   const list = keys
     .split(',')
@@ -150,7 +148,7 @@ function parseKeys(keys: string): string[] {
     throw new FilterError('keys must not be empty');
   }
 
-  const invalid = list.filter((key) => !KEY_RE.test(key));
+  const invalid = list.filter((key) => !isValidKey(key));
 
   if (invalid.length > 0) {
     throw new FilterError(`not valid tag keys: ${invalid.join(', ')}`);

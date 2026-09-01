@@ -16,8 +16,13 @@ export class Params {
 /** A filter the API cannot serve; surfaces as 400 with the message. */
 export class FilterError extends Error {}
 
+/** Tag-key syntax, as far as any query parameter is concerned. */
+export function isValidKey(key: string): boolean {
+  return KEY_RE.test(key);
+}
+
 function assertKey(key: string): void {
-  if (!KEY_RE.test(key)) {
+  if (!isValidKey(key)) {
     throw new FilterError(`not a valid tag key: ${key}`);
   }
 }

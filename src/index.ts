@@ -1,8 +1,8 @@
 import { buildApp } from './app.js';
 import { config } from './config.js';
-import { loadKeySets, pool } from './db.js';
+import { loadValueIndexRules, pool } from './db.js';
 
-await loadKeySets();
+await loadValueIndexRules();
 
 const app = await buildApp();
 

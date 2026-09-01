@@ -2,45 +2,37 @@
 -- switching on replication. `ADD COLUMN … GENERATED` rewrites the table, so it
 -- has to happen while nothing else is writing.
 
--- The keys the API can filter on. Union of the objects tool's category tree
--- (src/osm/osmTagToNameMapping-en.messages.ts in freemap-v3-react), the keys
--- the map-details click query asks for, and the tags the outdoor map's
--- /legend endpoint emits. The API reads this list at startup and rejects
--- filters on anything outside it, so it is the one place to widen.
-CREATE OR REPLACE FUNCTION fm_indexed_keys() RETURNS text[]
-  LANGUAGE sql IMMUTABLE PARALLEL SAFE
+-- Every key is searchable; what these rules exclude is *value* indexing, for
+-- keys whose values are free text or near-unique. Indexing those costs far more
+-- than it buys: on the Slovakia extract, values for every key make the index
+-- 333 MB against 65 MB with these rules and 22 MB for a hand-kept allowlist —
+-- and `ref:minvskaddress` alone contributes 1.5 M distinct terms nobody will
+-- ever search for.
+--
+-- The API reads these at startup and applies the same rules when it decides
+-- between an index lookup and a recheck, so this is the one place to change.
+CREATE OR REPLACE FUNCTION fm_value_index_rules(
+  OUT deny_patterns text[], OUT max_length int
+) LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS $$
   SELECT ARRAY[
-    'abandoned', 'abandoned:building', 'access', 'admin_level', 'aerialway',
-    'aeroway', 'amenity', 'artwork_type', 'attraction', 'barrier', 'bicycle',
-    'border', 'boundary', 'bridge', 'building', 'club', 'covered', 'craft',
-    'denotation', 'disused', 'disused:building', 'drinking_water', 'emergency',
-    'entrance', 'fireplace', 'fixme', 'foot', 'ford', 'generator:source',
-    'healthcare', 'highway', 'historic', 'information', 'intermittent',
-    'junction', 'landuse', 'leisure', 'location', 'lock', 'man_made',
-    'military', 'motor_vehicle', 'mountain_pass', 'natural', 'network',
-    'obstacle', 'office', 'oneway', 'place', 'plant:source', 'power',
-    'protect_class', 'protected', 'public_transport', 'railway', 'refitted',
-    'route', 'ruins', 'ruins:building', 'sauna', 'seasonal', 'service',
-    'shelter_type', 'shop', 'social_facility', 'sport', 'tourism',
-    'tower:type', 'tracktype', 'trail_visibility', 'tunnel', 'type', 'vehicle',
-    'vending', 'water', 'water_characteristic', 'waterway', 'wetland'
-  ]
+    'name%', '%_name', '%:name', 'addr:%', 'ref', 'ref:%', '%:ref',
+    'description%', 'note%', 'comment', 'fixme', 'FIXME',
+    'website%', 'url%', 'contact:%', 'phone%', 'fax', 'email',
+    'opening_hours%', 'service_times', 'collection_times', '%_hours',
+    'wikipedia%', 'wikidata%', 'wikimedia_commons', '%:wikidata',
+    '%:wikipedia', 'image%', 'mapillary', 'panoramax',
+    'source%', 'attribution', 'operator%', 'brand:%', 'ele',
+    'height', 'width', 'capacity%', 'population', 'start_date',
+    'end_date', 'inscription', 'check_date%', 'survey:date', '%:date'
+  ], 40
 $$;
 
--- Keys whose *values* are indexed too. `fixme` is free text, so it is
--- searchable only as "the key is present".
-CREATE OR REPLACE FUNCTION fm_valued_keys() RETURNS text[]
-  LANGUAGE sql IMMUTABLE PARALLEL SAFE
-AS $$
-  SELECT array_remove(fm_indexed_keys(), 'fixme')
-$$;
-
--- `kv` holds a bare `key` element per indexed key plus a `key=value` element
--- per valued key, lowercased and with semicolon lists exploded — so
+-- `kv` holds a bare `key` element per key plus a `key=value` element per
+-- indexable value, lowercased and with semicolon lists exploded — so
 -- `cuisine=Pizza;Kebab` is found by both `cuisine=pizza` and `cuisine=kebab`.
 --
--- To widen the key list: edit fm_indexed_keys() above, then
+-- After changing the rules above:
 --   ALTER TABLE osm_object ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags));
 --   REINDEX INDEX CONCURRENTLY osm_object_kv_idx;
 -- No re-import — osm_object holds every tag of every tagged object.
@@ -53,15 +45,27 @@ AS $$
     SELECT t.key AS entry
     UNION ALL
     SELECT t.key || '=' || lower(btrim(part))
-    FROM unnest(string_to_array(t.value, ';')) AS part
-    WHERE t.key = ANY (fm_valued_keys())
-      AND btrim(part) <> ''
-      -- Free-text values are never searched for and would bloat the index. The
-      -- cap is on the entry as stored, so whitespace does not count towards it;
-      -- the API rejects a longer value rather than search for what is not here.
-      AND length(btrim(part)) <= 100
+    FROM unnest(string_to_array(t.value, ';')) AS part,
+         LATERAL fm_value_index_rules() AS r
+    WHERE btrim(part) <> ''
+      AND NOT (t.key LIKE ANY (r.deny_patterns))
+      -- The cap is on the entry as stored, so whitespace does not count
+      -- towards it; a longer value is answered by a recheck instead.
+      AND length(btrim(part)) <= r.max_length
   ) AS e
-  WHERE t.key = ANY (fm_indexed_keys())
+$$;
+
+-- Answers a value predicate the index cannot: the same normalisation as fm_kv,
+-- run against the row's own tags. Always ANDed with an indexed key test, so it
+-- is a recheck over few rows rather than a scan.
+CREATE OR REPLACE FUNCTION fm_tag_matches(tags jsonb, key text, value text)
+  RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM unnest(string_to_array(tags ->> key, ';')) AS part
+    WHERE lower(btrim(part)) = value
+  )
 $$;
 
 -- The label point. ST_PointOnSurface stays inside the polygon where a centroid

@@ -26,35 +26,51 @@ export async function queryJson(
 }
 
 /**
- * The keys `kv` is built from, read once at startup. The API rejects filters on
- * anything else rather than falling back to an unindexed scan.
+ * Which values `kv` carries, read from the database at startup so the rules
+ * live in one place (fm_value_index_rules in sql/post-import.sql). A predicate
+ * on a value outside them is answered by a recheck, not refused.
  */
-export type KeySets = { indexed: Set<string>; valued: Set<string> };
+export type ValueIndexRules = { denied: RegExp[]; maxLength: number };
 
-let keySets: KeySets | undefined;
+let valueIndexRules: ValueIndexRules | undefined;
 
-export async function loadKeySets(): Promise<KeySets> {
-  const { rows } = await pool.query<{ indexed: string[]; valued: string[] }>(
-    'SELECT fm_indexed_keys() AS indexed, fm_valued_keys() AS valued',
+/** A `LIKE` pattern as a whole-string regex; only `%` is a wildcard here. */
+function likeToRegExp(pattern: string): RegExp {
+  return new RegExp(
+    `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('%', '.*')}$`,
   );
+}
+
+export async function loadValueIndexRules(): Promise<ValueIndexRules> {
+  const { rows } = await pool.query<{
+    deny_patterns: string[];
+    max_length: number;
+  }>('SELECT * FROM fm_value_index_rules()');
 
   const row = rows[0];
 
   if (!row) {
-    throw new Error('fm_indexed_keys() returned nothing');
+    throw new Error('fm_value_index_rules() returned nothing');
   }
 
-  keySets = { indexed: new Set(row.indexed), valued: new Set(row.valued) };
+  valueIndexRules = {
+    denied: row.deny_patterns.map(likeToRegExp),
+    maxLength: row.max_length,
+  };
 
-  return keySets;
+  return valueIndexRules;
 }
 
-export function getKeySets(): KeySets {
-  if (!keySets) {
-    throw new Error('key sets not loaded');
+/** Whether `kv` holds this pair, or the query has to recheck the tags. */
+export function isValueIndexed(key: string, value: string): boolean {
+  if (!valueIndexRules) {
+    throw new Error('value index rules not loaded');
   }
 
-  return keySets;
+  return (
+    value.length <= valueIndexRules.maxLength &&
+    !valueIndexRules.denied.some((pattern) => pattern.test(key))
+  );
 }
 
 type Status = {

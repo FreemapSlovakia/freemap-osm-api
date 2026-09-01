@@ -1,13 +1,6 @@
-import { getKeySets } from './db.js';
+import { isValueIndexed } from './db.js';
 
 const KEY_RE = /^[a-zA-Z0-9_:.-]+$/;
-
-/**
- * What `fm_kv()` in sql/post-import.sql still puts in the index — longer values
- * are free text. Rejecting them here is the difference between an explanation
- * and an empty collection nothing accounts for.
- */
-const MAX_VALUE_LENGTH = 100;
 
 /** Collects bind values so SQL can be assembled with $n placeholders. */
 export class Params {
@@ -35,8 +28,6 @@ function assertKey(key: string): void {
  * positive ones collapse into a single `kv @> ARRAY[…]` containment test.
  */
 export function clauseToSql(clause: string, params: Params): string {
-  const { indexed, valued } = getKeySets();
-
   const contains: string[] = [];
 
   const conditions: string[] = [];
@@ -63,10 +54,6 @@ export function clauseToSql(clause: string, params: Params): string {
     if (eq < 0) {
       assertKey(predicate);
 
-      if (!indexed.has(predicate)) {
-        throw new FilterError(`tag key is not searchable: ${predicate}`);
-      }
-
       contains.push(predicate);
 
       continue;
@@ -87,18 +74,18 @@ export function clauseToSql(clause: string, params: Params): string {
       throw new FilterError(`empty value in predicate: ${predicate}`);
     }
 
-    if (value.length > MAX_VALUE_LENGTH) {
-      throw new FilterError(
-        `tag value is longer than ${MAX_VALUE_LENGTH} characters, ` +
-          `so it is not indexed: ${key}`,
+    if (isValueIndexed(key, value)) {
+      contains.push(`${key}=${value}`);
+    } else {
+      // Free text or an over-long value, so `kv` does not carry the pair. The
+      // key still anchors the lookup on the index; the value is rechecked on
+      // the rows that come back.
+      contains.push(key);
+
+      conditions.push(
+        `fm_tag_matches(tags, ${params.add(key)}, ${params.add(value)})`,
       );
     }
-
-    if (!valued.has(key)) {
-      throw new FilterError(`tag values are not searchable for key: ${key}`);
-    }
-
-    contains.push(`${key}=${value}`);
   }
 
   // Without one, the condition could only be answered by a full scan.

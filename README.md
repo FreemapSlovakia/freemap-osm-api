@@ -65,14 +65,25 @@ osm_object(osm_type "char", osm_id bigint, tags jsonb, geom geometry(…,3857),
 ```
 
 Every tagged object is stored with all of its tags — the Lua does no filtering.
-What is *searchable* is decided by `fm_indexed_keys()` in
-[`sql/post-import.sql`](sql/post-import.sql), which drives the generated `kv`
-column: a bare `key` element per indexed key plus a `key=value` element per
-value (lowercased, semicolon lists exploded). One GIN index over `kv` then
-answers every predicate the API supports as an array-containment test — no
-regex, no `LIKE`, no jsonb path scan.
+The generated `kv` column is what makes them searchable: a bare `key` element
+per key, plus a `key=value` element per value (lowercased, semicolon lists
+exploded). One GIN index over `kv` answers every predicate the API supports as
+an array-containment test — no regex, no `LIKE`, no jsonb path scan.
 
-To make another key searchable, edit `fm_indexed_keys()` and run:
+**Every key is searchable and no list has to be kept.** What
+`fm_value_index_rules()` in [`sql/post-import.sql`](sql/post-import.sql)
+excludes is *value* indexing for keys whose values are free text or near-unique
+(`name*`, `addr:*`, `ref*`, `website`, dates, …) and values over 40 characters.
+A predicate on one of those is not refused: the key still anchors the lookup on
+the index and `fm_tag_matches()` rechecks the value on the rows that come back.
+
+Measured on the Slovakia extract, the `kv` index is 22 MB with a hand-kept key
+allowlist, **66 MB with these rules**, and 333 MB with every value indexed —
+the last mostly `ref:minvskaddress`, 1.5 M distinct terms nobody searches for.
+Against a table that is ~330 GB for Europe, the middle option costs nothing
+worth the maintenance of the first.
+
+After changing the rules:
 
 ```sql
 ALTER TABLE osm_object ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags));

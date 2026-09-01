@@ -1,0 +1,24 @@
+# One replication catch-up. Driven by freemap-osm-update.timer; run it by hand
+# (`systemctl start freemap-osm-update`) to see a single pass in the journal.
+#
+# The replication server, the flat-nodes file and the style are remembered in
+# osm2pgsql_properties from the import, so this repeats only the style — losing
+# it would silently rebuild the table with a different shape.
+
+[Unit]
+Description=Apply OSM replication diffs to the Freemap OSM database
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=freemap
+WorkingDirectory=/opt/freemap-osm-api
+EnvironmentFile=/etc/freemap-osm-api.conf
+# --max-diff-size caps one pass, so a long outage catches up over several runs
+# instead of one that runs out of memory.
+ExecStart=/usr/bin/osm2pgsql-replication update --max-diff-size 500 -- \
+  --output=flex --style /opt/freemap-osm-api/osm2pgsql/freemap-osm.lua --slim
+# A pass that dies mid-way leaves the database consistent (osm2pgsql is
+# transactional), and the next tick picks up from the stored sequence.
+TimeoutStartSec=6h

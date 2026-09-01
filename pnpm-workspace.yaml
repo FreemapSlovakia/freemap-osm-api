@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@dotenvx/dotenvx@2.23.0'

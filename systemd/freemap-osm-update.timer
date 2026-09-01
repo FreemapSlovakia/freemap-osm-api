@@ -1,0 +1,17 @@
+# Minutely catch-up. Install with
+#   sudo cp systemd/freemap-osm-update.* /etc/systemd/system/
+#   sudo systemctl enable --now freemap-osm-update.timer
+
+[Unit]
+Description=Apply OSM replication diffs every minute
+
+[Timer]
+# Measured from the end of the previous run, so a pass that takes longer than a
+# minute is never overlapped by the next one.
+OnUnitInactiveSec=1min
+OnBootSec=5min
+AccuracySec=15s
+Unit=freemap-osm-update.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,22 @@
+# The read-only OSM query API. Install with
+#   sudo cp systemd/freemap-osm-api.service /etc/systemd/system/
+# — see README "Deployment (fm5)".
+
+[Unit]
+Description=Freemap OSM query API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=freemap
+WorkingDirectory=/opt/freemap-osm-api
+# PG* connection settings, HTTP_PORT, CORS_ORIGINS.
+EnvironmentFile=/etc/freemap-osm-api.conf
+ExecStart=/home/freemap/.local/share/fnm/aliases/default/bin/node \
+  --enable-source-maps build/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

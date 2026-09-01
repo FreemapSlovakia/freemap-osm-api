@@ -71,9 +71,10 @@ exploded). One GIN index over `kv` answers every predicate the API supports as
 an array-containment test — no regex, no `LIKE`, no jsonb path scan.
 
 **Every key is searchable and no list has to be kept.** What
-`fm_value_index_rules()` in [`sql/post-import.sql`](sql/post-import.sql)
-excludes is *value* indexing for keys whose values are free text or near-unique
-(`name*`, `addr:*`, `ref*`, `website`, dates, …) and values over 40 characters.
+`fm_value_deny_patterns()` and `fm_max_value_length()` in
+[`sql/post-import.sql`](sql/post-import.sql) exclude is *value* indexing for
+keys whose values are free text or near-unique (`name*`, `addr:*`, `ref*`,
+`website`, dates, …) and values over 40 characters.
 A predicate on one of those is not refused: the key still anchors the lookup on
 the index and `fm_tag_matches()` rechecks the value on the rows that come back.
 
@@ -215,9 +216,9 @@ SQL
 
 ### The region (Europe import only)
 
-The polygon the locator keeps objects inside. Use the **extract's own
-boundary**: every part of it is then fully populated by the import, and the
-updates add nothing the import would not have had.
+The polygon the locator keeps objects inside: the **intersection** of the
+extract's own boundary with `limit-europe-buffered.geojson`, the polygon
+`freemap-outdoor-map` and GraphHopper already cut to.
 
 ```sh
 cd /fm/data4/osm-import
@@ -225,16 +226,31 @@ sudo -u osm wget -O europe.poly https://download.geofabrik.de/europe.poly
 sudo -u osm python3 /opt/freemap-osm-api/osm2pgsql/poly2wkt.py europe.poly \
   > /tmp/europe.wkt
 sudo -u osm psql -d osm \
-  -c "CREATE TABLE fm_region (geom geometry(MultiPolygon, 4326))" \
-  -c "\copy fm_region (geom) FROM /tmp/europe.wkt" \
+  -c "CREATE TABLE fm_region_geofabrik (geom geometry(MultiPolygon, 4326))" \
+  -c "\copy fm_region_geofabrik (geom) FROM /tmp/europe.wkt"
+
+sudo -u osm ogr2ogr -f PostgreSQL PG:"dbname=osm" limit-europe-buffered.geojson \
+  -nln fm_limit -nlt PROMOTE_TO_MULTI -t_srs EPSG:4326 -overwrite
+
+sudo -u osm psql -d osm \
+  -c "CREATE TABLE fm_region AS
+        SELECT ST_Multi(ST_CollectionExtract(ST_Intersection(
+                 g.geom, ST_MakeValid(l.wkb_geometry)), 3))
+               ::geometry(MultiPolygon, 4326) AS geom
+        FROM fm_region_geofabrik g, fm_limit l" \
   -c "CREATE INDEX ON fm_region USING gist (geom)"
 ```
 
-`freemap-outdoor-map`'s `limit-europe-buffered.geojson` is the wrong polygon
-for this even though it is the same idea: 11% of it lies outside the Geofabrik
-extract, where the import leaves nothing and edits would trickle in one object
-at a time, and it drops 13% of the extract that was downloaded anyway. It cuts
-what the renderer draws, which is a different question from where data exists.
+Neither polygon does the job alone. 11% of the buffered one lies outside the
+extract — a buffer over North Africa and the Middle East where the import
+leaves nothing and edits would trickle in one object at a time. 13% of the
+extract lies outside the buffered one, and that part is Russia, which
+`limit-europe-buffered` exists to drop. The intersection (2746 deg², against
+3170 and 3099) is fully populated everywhere and Russia-free: Moscow and
+St Petersburg fall outside it, Kyiv, Istanbul, Nicosia, Reykjavík, Tromsø and
+Kaliningrad inside. The Canaries are outside both, so nothing is lost there
+that the extract had.
+
 Narrowing the region later is free; widening it needs a re-import.
 
 ### Import

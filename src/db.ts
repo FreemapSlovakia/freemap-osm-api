@@ -27,8 +27,9 @@ export async function queryJson(
 
 /**
  * Which values `kv` carries, read from the database at startup so the rules
- * live in one place (fm_value_index_rules in sql/post-import.sql). A predicate
- * on a value outside them is answered by a recheck, not refused.
+ * live in one place (fm_value_deny_patterns and fm_max_value_length in
+ * sql/post-import.sql). A predicate on a value outside them is answered by a
+ * recheck, not refused.
  */
 type ValueIndexRules = { denied: RegExp[]; maxLength: number };
 

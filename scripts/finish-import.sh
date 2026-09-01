@@ -16,6 +16,11 @@ DB=${PGDATABASE:-osm}
 REPO=/opt/freemap-osm-api
 MINUTELY=https://planet.openstreetmap.org/replication/minute
 
+# Bounds the success check below to this run. The journal keeps a collected
+# unit's entries for as long as any others, so an earlier import's success line
+# would otherwise vouch for a later one that failed.
+started=$(date '+%Y-%m-%d %H:%M:%S')
+
 echo "waiting for osm-import to finish"
 while systemctl is-active --quiet osm-import; do
   sleep 60
@@ -23,7 +28,8 @@ done
 
 # The unit is transient and collected, so its exit status is gone by now; this
 # line is what osm2pgsql prints only on a run that completed.
-if ! journalctl -u osm-import --no-pager | grep -q 'osm2pgsql took'; then
+if ! journalctl -u osm-import --no-pager --since "$started" |
+  grep -q 'osm2pgsql took'; then
   echo "import did not complete — leaving the database alone" >&2
   exit 1
 fi

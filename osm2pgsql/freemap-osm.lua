@@ -4,6 +4,23 @@
 -- filtering: which keys are *searchable* is decided by the `kv` generated
 -- column in sql/post-import.sql, so widening it never needs a re-import.
 
+-- Keeps only objects intersecting a region, which is what lets a database
+-- imported from an extract take the planet's minutely diffs: the diffs carry
+-- the nodes of foreign ways too, so without this their geometry assembles and
+-- the table fills with a partial world map. Unset for a planet import.
+--
+--   FM_REGION_QUERY="SELECT 'europe', geom FROM fm_region"
+--
+-- The query returns (name, geometry in WGS84). Needs osm2pgsql 2.2+.
+local region_query = os.getenv('FM_REGION_QUERY')
+
+local region
+
+if region_query then
+  region = osm2pgsql.define_locator({ name = 'region' })
+  region:add_from_db(region_query)
+end
+
 local osm_object = osm2pgsql.define_table({
   name = 'osm_object',
   ids = { type = 'any', id_column = 'osm_id', type_column = 'osm_type' },
@@ -81,15 +98,21 @@ local function add(object, geom)
     return
   end
 
-  local geom_type = geom:geometry_type()
+  if region and not region:first_intersecting(geom) then
+    return
+  end
+
+  local merc = geom:transform(3857)
+
+  local geom_type = merc:geometry_type()
 
   local area = nil
 
   if geom_type == 'POLYGON' or geom_type == 'MULTIPOLYGON' then
-    area = geom:area()
+    area = merc:area()
   end
 
-  osm_object:insert({ tags = object.tags, geom = geom, area = area })
+  osm_object:insert({ tags = object.tags, geom = merc, area = area })
 end
 
 function osm2pgsql.process_node(object)
@@ -97,7 +120,7 @@ function osm2pgsql.process_node(object)
     return
   end
 
-  add(object, object:as_point():transform(3857))
+  add(object, object:as_point())
 end
 
 function osm2pgsql.process_way(object)
@@ -106,9 +129,9 @@ function osm2pgsql.process_way(object)
   end
 
   if object.is_closed and is_area(object.tags) then
-    add(object, object:as_polygon():transform(3857))
+    add(object, object:as_polygon())
   else
-    add(object, object:as_linestring():transform(3857))
+    add(object, object:as_linestring())
   end
 end
 
@@ -120,10 +143,10 @@ function osm2pgsql.process_relation(object)
   local relation_type = object.tags.type
 
   if relation_type == 'multipolygon' or relation_type == 'boundary' then
-    add(object, object:as_multipolygon():transform(3857))
+    add(object, object:as_multipolygon())
   elseif relation_type then
     -- Routes, waterways, networks: everything else that is a chain of ways.
     -- Relations whose members carry no line geometry drop out as null.
-    add(object, object:as_multilinestring():transform(3857))
+    add(object, object:as_multilinestring())
   end
 end

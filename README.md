@@ -138,44 +138,44 @@ Slovakia, on a 24-core box: import 4m30s, `post-import.sql` 2m15s, 5.6M rows in
 
 ## Deployment (fm5)
 
-### Extract or planet — this decides the update cadence
-
-**Minutely updates and a regional extract do not go together.** Geofabrik
-publishes extract diffs once a day (europe-updates was at sequence 4866 on
-2026-08-03, one per day since 2013), and planet minutely diffs cannot simply be
-cut down to a region: there is no tool that spatially filters a change file
-(`osmium extract` takes data files, not `.osc`), and even filtering the *output*
-would not help, because osm2pgsql's middle ingests every changed way in the
-world — about 130 GB a year of rows nothing ever reads. osm2pgsql's own manual
-says as much: planet replication diffs cannot be applied to an extract database.
-
-So it is one of:
+### Europe first, planet later
 
 | | data | freshness | size |
 | --- | --- | --- | --- |
-| Geofabrik `europe-latest` + `europe-updates` | Europe | ~1 day | ~630 GB |
-| planet + `replication/minute` | world | ~1 min | ~1.3 TB |
+| Europe extract + planet minutely diffs + `FM_REGION_QUERY` | Europe | ~1 min | ~630 GB |
+| planet + planet minutely diffs | world | ~1 min | ~1.3 TB |
 
 Sizes are the Slovakia import (7.0 GB) scaled by object count: `osm_object`
 750 GB / middle ways 390 GB / middle rels 21 GB / flat-nodes 112 GB for planet;
 330 / 175 / 10 / 112 for Europe.
 
-Planet also removes the coverage regression — the Overpass it replaces is a
-world instance (`overpass_world_attic`, 862 GB on `/fm/data4`), so Europe-only
-loses the objects layer and map details outside Europe.
+Import Europe first — it fits in the 1.2 TB free beside the running Overpass, so
+there is a fallback the whole time. Once the app is on it and Overpass is
+retired (~2 TB free), re-import as planet and unset `FM_REGION_QUERY`; that also
+ends the coverage gap, since the Overpass being replaced is a world instance
+(`overpass_world_attic`, 862 GB on `/fm/data4`). Nothing else changes: same
+Lua, same SQL, same units.
 
-**Recommended order**: import Europe first — it fits in the 1.2 TB free beside
-the running Overpass, so there is a fallback the whole time. Once the app is on
-it and Overpass is retired (~2 TB free), re-import as planet and point
-replication at the minutely service. Nothing but the import command changes: the
-Lua, the SQL and the units are identical either way. The direct planet route is
-also defensible, since `/mnt/nfs/overpass_db_backup` holds a full copy of the
-Overpass database to fall back on.
+**An extract can take the planet's minutely diffs, but only with the locator.**
+The diffs carry the nodes of foreign ways too, so their geometry assembles and
+the table fills with a partial world map: measured on a Slovakia import, one
+minute of unfiltered diffs added 353 objects outside the extract, and 25 minutes
+added 6215. With `FM_REGION_QUERY` set, twelve minutes of the same diffs added
+none while Slovak data kept updating. Geofabrik's own `europe-updates` is the
+alternative, at one diff a day (sequence 4866 on 2026-08-03, one per day since
+2013).
+
+What the locator does *not* filter is the middle, which osm2pgsql fills before
+the Lua sees anything: `planet_osm_ways` grows with every way edited anywhere,
+measured at 424/min ≈ **6.4 GB/month**. Over a bridge of a few months that is
+noise, and the planet re-import discards it. (`--flat-nodes` is already sized
+by the planet's id space, so foreign nodes cost nothing.)
 
 ### Prerequisites
 
 ```sh
-# osm2pgsql 2.3.1 (trixie has 2.1.1)
+# osm2pgsql 2.3.1; trixie has 2.1.1, which has no locator. Backports is already
+# in the sources — it just needs asking for, since backports pin at 100.
 sudo apt install -t trixie-backports osm2pgsql
 # Node 22+ (Debian ships 20), same fnm layout as fm6
 sudo -u freemap bash -c 'curl -fsSL https://fnm.vercel.app/install | bash \
@@ -206,13 +206,29 @@ ALTER DEFAULT PRIVILEGES FOR ROLE osm IN SCHEMA public
 SQL
 ```
 
+### The region (Europe import only)
+
+The polygon the locator keeps objects inside. `freemap-outdoor-map` already has
+the one the renderer uses, so the API's coverage matches the map's:
+
+```sh
+ogr2ogr -f PostgreSQL PG:"dbname=osm" limit-europe-buffered.geojson \
+  -nln fm_region -nlt PROMOTE_TO_MULTI -t_srs EPSG:4326 -overwrite
+sudo -u osm psql -d osm -c \
+  "CREATE INDEX ON fm_region USING gist (wkb_geometry)"
+```
+
 ### Import
 
 ```sh
 cd /fm/data4/osm-import
 wget https://download.geofabrik.de/europe-latest.osm.pbf     # or planet-latest.osm.pbf
 
-sudo -u osm osm2pgsql -d osm --output=flex \
+# Unset for a planet import; the locator is what keeps foreign objects out of
+# an extract that takes the planet's diffs.
+export FM_REGION_QUERY="SELECT 'europe', wkb_geometry FROM fm_region"
+
+sudo -u osm -E osm2pgsql -d osm --output=flex \
   --style /opt/freemap-osm-api/osm2pgsql/freemap-osm.lua \
   --slim --flat-nodes /fm/data4/osm-import/flat-nodes.bin \
   --cache 40000 --number-processes 16 \
@@ -228,8 +244,17 @@ Europe and the best part of a day for planet.
 
 ### Replication
 
+Point it at the planet's minutely service explicitly — left alone, `init` takes
+the daily Geofabrik URL out of the extract's header. `--start-at` in minutes
+makes it use the database's own timestamp, rolled back that far:
+
 ```sh
-sudo -u osm osm2pgsql-replication init -d osm   # reads the server from the .pbf header
+sudo -u osm osm2pgsql-replication init -d osm \
+  --server https://planet.openstreetmap.org/replication/minute --start-at 180
+
+echo 'FM_REGION_QUERY=SELECT '"'"'europe'"'"', wkb_geometry FROM fm_region' \
+  | sudo tee -a /etc/freemap-osm-api.conf
+
 sudo cp systemd/freemap-osm-update.* /etc/systemd/system/
 sudo systemctl enable --now freemap-osm-update.timer
 systemctl list-timers freemap-osm-update.timer
@@ -238,6 +263,10 @@ systemctl list-timers freemap-osm-update.timer
 `update` runs `osm2pgsql --append`, which recomputes `kv` for every changed row
 through the generated column. `osm2pgsql-replication status -d osm` prints the
 lag, and `/v1/status` serves the same timestamp to the app.
+
+When the planet re-import happens, drop `FM_REGION_QUERY` from
+`/etc/freemap-osm-api.conf` — leaving it set would keep filtering the planet
+down to Europe.
 
 ### The service
 

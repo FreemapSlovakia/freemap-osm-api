@@ -1,9 +1,11 @@
 # One replication catch-up. Driven by freemap-osm-update.timer; run it by hand
 # (`systemctl start freemap-osm-update`) to see a single pass in the journal.
 #
-# The replication server, the flat-nodes file and the style are remembered in
+# The replication server and the flat-nodes file are remembered in
 # osm2pgsql_properties from the import, so this repeats only the style — losing
-# it would silently rebuild the table with a different shape.
+# it would silently rebuild the table with a different shape. FM_REGION_QUERY
+# comes from the environment file and must match the import: without it, the
+# planet's diffs fill an extract database with a partial world map.
 
 [Unit]
 Description=Apply OSM replication diffs to the Freemap OSM database

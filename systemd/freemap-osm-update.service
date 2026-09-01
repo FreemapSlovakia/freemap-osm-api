@@ -18,6 +18,11 @@ Type=oneshot
 User=osm
 WorkingDirectory=/opt/freemap-osm-api
 EnvironmentFile=/etc/freemap-osm-api.conf
+# The shared file carries PGHOST, PGDATABASE and FM_REGION_QUERY but no PGUSER,
+# because the two units connect as different roles: this one writes and owns the
+# data, the API only reads. It has to be set here rather than in the file — an
+# EnvironmentFile overrides Environment=, so a PGUSER in the file would win.
+Environment=PGUSER=osm
 # --max-diff-size caps one pass, so a long outage catches up over several runs
 # instead of one that runs out of memory.
 ExecStart=/usr/bin/osm2pgsql-replication update --max-diff-size 500 -- \

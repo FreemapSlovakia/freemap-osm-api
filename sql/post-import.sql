@@ -74,8 +74,10 @@ AS $$
 $$;
 
 -- Answers a value predicate the index cannot, against the row's own tags.
--- Always ANDed with an indexed key test, so it is a recheck over few rows
--- rather than a scan.
+-- Always ANDed with a key test, so the index bounds it — but only as tightly as
+-- that key is rare, and the denied keys are the common ones: `name` anchors on
+-- 457k rows of the Slovakia extract, `addr:housenumber` on 1.6M. Cheap next to a
+-- selective predicate, a second or more on its own over a wide bbox.
 CREATE OR REPLACE FUNCTION fm_tag_matches(tags jsonb, key text, value text)
   RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
 AS $$

@@ -78,6 +78,14 @@ keys whose values are free text or near-unique (`name*`, `addr:*`, `ref*`,
 A predicate on one of those is not refused: the key still anchors the lookup on
 the index and `fm_tag_matches()` rechecks the value on the rows that come back.
 
+That anchor is only as selective as the key is rare, and the denied keys are the
+common ones. Measured on Slovakia, `f=addr:housenumber=12` over a city viewport
+reads all 1.6 M `addr:housenumber` postings (135 ms of 292 ms), and `f=name=…`
+drops the geometry index for a 457 k-row heap scan — 104 ms for a city bbox,
+around a second for the whole country, and the cost follows the key's *global*
+frequency, not the viewport, so Europe multiplies it. Pair such a predicate with
+a selective one (`f=amenity=restaurant,name=…`) and it is cheap again.
+
 Measured on the Slovakia extract, the `kv` index is 22 MB with a hand-kept key
 allowlist, **66 MB with these rules**, and 333 MB with every value indexed —
 the last mostly `ref:minvskaddress`, 1.5 M distinct terms nobody searches for.
@@ -91,8 +99,15 @@ ALTER TABLE osm_object ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags));
 REINDEX INDEX CONCURRENTLY osm_object_kv_idx;
 ```
 
+```sh
+sudo systemctl restart freemap-osm-api
+```
+
 That rewrites the table but needs no re-import, because `tags` already holds
-everything.
+everything. The restart is not optional: the API reads the rules once, at
+startup, so a process that outlives a *newly denied* key keeps asking the index
+for `key=value` entries the rebuild removed — and answers an empty
+`FeatureCollection` with no error.
 
 ### Known differences from Overpass
 
@@ -190,12 +205,12 @@ PostgreSQL 18 and PostGIS 3.x are already on the box; the cluster lives on
 ### Database
 
 ```sh
-sudo -u postgres mkdir -p /fm/data4/pg_osm && sudo chown postgres: /fm/data4/pg_osm
 # A system user of the same name, so import and replication reach the database
 # by peer auth over the socket with no password anywhere.
 sudo useradd --system --home-dir /fm/data4/osm-import --shell /usr/sbin/nologin osm
 sudo mkdir -p /fm/data4/osm-import && sudo chown osm: /fm/data4/osm-import
 
+# CREATE TABLESPACE needs the directory empty and 0700, owned by postgres.
 sudo mkdir -p /fm/data4/pg_osm && sudo chown postgres: /fm/data4/pg_osm
 sudo chmod 700 /fm/data4/pg_osm
 
@@ -205,8 +220,14 @@ CREATE ROLE osm LOGIN;
 CREATE DATABASE osm OWNER osm TABLESPACE osm_ts;
 SQL
 sudo -u postgres psql -d osm -c 'CREATE EXTENSION postgis'
-# The service runs as `freemap`, like photon, and only reads.
+# The service runs as `freemap`, like photon, and only reads. The role may
+# already exist on the box, so creating it is written to be repeatable.
 sudo -u postgres psql -d osm <<'SQL'
+DO $$ BEGIN
+  CREATE ROLE freemap LOGIN;
+EXCEPTION WHEN duplicate_object THEN
+  RAISE NOTICE 'role freemap already exists';
+END $$;
 GRANT CONNECT ON DATABASE osm TO freemap;
 GRANT USAGE ON SCHEMA public TO freemap;
 ALTER DEFAULT PRIVILEGES FOR ROLE osm IN SCHEMA public
@@ -229,6 +250,8 @@ sudo -u osm psql -d osm \
   -c "CREATE TABLE fm_region_geofabrik (geom geometry(MultiPolygon, 4326))" \
   -c "\copy fm_region_geofabrik (geom) FROM /tmp/europe.wkt"
 
+sudo -u osm wget -O limit-europe-buffered.geojson \
+  https://raw.githubusercontent.com/FreemapSlovakia/freemap-outdoor-map/main/limit-europe-buffered.geojson
 sudo -u osm ogr2ogr -f PostgreSQL PG:"dbname=osm" limit-europe-buffered.geojson \
   -nln fm_limit -nlt PROMOTE_TO_MULTI -t_srs EPSG:4326 -overwrite
 
@@ -251,7 +274,12 @@ St Petersburg fall outside it, Kyiv, Istanbul, Nicosia, Reykjavík, Tromsø and
 Kaliningrad inside. The Canaries are outside both, so nothing is lost there
 that the extract had.
 
-Narrowing the region later is free; widening it needs a re-import.
+Narrowing the region later needs no re-import for updates to stay correct, but
+it does not retract what is already there: rows outside the new region sit in
+`osm_object` until a diff happens to touch them. Widening needs a re-import.
+
+The import fails outright if the query loads no regions — the alternative is an
+empty table after several hours, since every object is then outside the region.
 
 ### Import
 
@@ -287,8 +315,18 @@ makes it use the database's own timestamp, rolled back that far:
 sudo -u osm osm2pgsql-replication init -d osm \
   --server https://planet.openstreetmap.org/replication/minute --start-at 180
 
-echo "FM_REGION_QUERY=SELECT 'europe', geom FROM fm_region" \
-  | sudo tee -a /etc/freemap-osm-api.conf
+# Both units read this, so it is written once, here — before anything that
+# needs it starts. Drop the FM_REGION_QUERY line for a planet import; each unit
+# supplies its own PGUSER, since the API reads and the updater writes.
+sudo tee /etc/freemap-osm-api.conf <<'CONF'
+PGHOST=/var/run/postgresql
+PGDATABASE=osm
+HTTP_HOST=127.0.0.1
+HTTP_PORT=3010
+LOG_LEVEL=info
+CORS_ORIGINS=https://www.freemap.sk,https://freemap.sk,https://www.freemap.eu,https://freemap.eu
+FM_REGION_QUERY=SELECT 'europe', geom FROM fm_region
+CONF
 
 sudo cp systemd/freemap-osm-update.* /etc/systemd/system/
 sudo systemctl enable --now freemap-osm-update.timer
@@ -310,23 +348,16 @@ sudo git clone https://github.com/FreemapSlovakia/freemap-osm-api /opt/freemap-o
 sudo chown -R freemap: /opt/freemap-osm-api
 sudo -u freemap bash -c 'cd /opt/freemap-osm-api && pnpm install && pnpm build'
 
-sudo tee /etc/freemap-osm-api.conf <<'CONF'
-PGHOST=/var/run/postgresql
-PGDATABASE=osm
-PGUSER=freemap
-HTTP_HOST=127.0.0.1
-HTTP_PORT=3010
-LOG_LEVEL=info
-CORS_ORIGINS=https://www.freemap.sk,https://freemap.sk,https://www.freemap.eu,https://freemap.eu
-CONF
-
 sudo cp systemd/freemap-osm-api.service /etc/systemd/system/
 sudo systemctl enable --now freemap-osm-api
 curl -s localhost:3010/v1/status
 ```
 
-`/etc/freemap-osm-api.conf` is read by both units — the update unit takes its
-`PG*` from it too, so the connection is configured in one place.
+`/etc/freemap-osm-api.conf`, written in the previous step, is read by both units,
+so the connection is configured in one place. `PGUSER` is the exception and lives
+in each unit: the API connects as the read-only `freemap`, the update unit as the
+owner `osm`. Writing it into the file would break the updater — an
+`EnvironmentFile` overrides `Environment=`, so the file's value would win in both.
 
 ### nginx
 

@@ -20,6 +20,18 @@ local region
 if region_query then
   region = osm2pgsql.define_locator({ name = 'region' })
   region:add_from_db(region_query)
+
+  -- A query that matches nothing loads no regions, and every object is then
+  -- outside the region: the import runs to the end and writes an empty table.
+  -- osm2pgsql logs the count only as information, and the locator has no size()
+  -- in Lua — but it prints one, as `osm2pgsql.Locator[name=region,size=N]`.
+  local size = tonumber(tostring(region):match('size=(%d+)'))
+
+  if not size or size == 0 then
+    error('FM_REGION_QUERY loaded no regions: ' .. region_query)
+  end
+
+  print(('Region locator: %d regions from %s'):format(size, region_query))
 end
 
 local osm_object = osm2pgsql.define_table({

@@ -22,11 +22,21 @@ def rings(path):
         i += 1
 
         coords = []
-        while lines[i] != "END":
+        # A truncated download ends mid-ring. Left unchecked that is an
+        # IndexError over a half-written file, and the caller's redirect has
+        # already created the output — so say what is wrong instead.
+        while i < len(lines) and lines[i] != "END":
             lon, lat = lines[i].split()
             coords.append(f"{float(lon)} {float(lat)}")
             i += 1
+
+        if i >= len(lines):
+            raise SystemExit(f"{path}: ring not terminated by END")
+
         i += 1
+
+        if not coords:
+            raise SystemExit(f"{path}: ring with no coordinates")
 
         # A ring the file left open is closed here; WKT requires it.
         if coords[0] != coords[-1]:
@@ -46,6 +56,9 @@ def main(path):
         else:
             polygons.append([ring])
 
+    if not polygons:
+        raise SystemExit(f"{path}: no rings")
+
     print(
         "MULTIPOLYGON("
         + ", ".join("(" + ", ".join(p) + ")" for p in polygons)
@@ -54,4 +67,7 @@ def main(path):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: poly2wkt.py FILE.poly")
+
     main(sys.argv[1])

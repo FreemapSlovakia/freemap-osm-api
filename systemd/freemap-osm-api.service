@@ -11,8 +11,11 @@ Wants=postgresql.service
 Type=simple
 User=freemap
 WorkingDirectory=/opt/freemap-osm-api
-# PG* connection settings, HTTP_PORT, CORS_ORIGINS.
+# PGHOST and PGDATABASE, HTTP_PORT, CORS_ORIGINS.
 EnvironmentFile=/etc/freemap-osm-api.conf
+# The read-only role, which is this unit's own — the update unit shares the file
+# but connects as the owner. See the comment there for why it is not in the file.
+Environment=PGUSER=freemap
 ExecStart=/home/freemap/.local/share/fnm/aliases/default/bin/node \
   --enable-source-maps build/index.js
 Restart=on-failure

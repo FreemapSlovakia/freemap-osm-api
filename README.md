@@ -2,8 +2,8 @@
 
 A small read-only HTTP API over an osm2pgsql database, replacing the Overpass
 instance the Freemap app used for its objects (POI) layer and for map details.
-It is closed-form on purpose: no Overpass QL, only the three queries the app
-actually makes.
+It is closed-form on purpose: no Overpass QL, only the queries the app actually
+makes.
 
 ## Endpoints
 
@@ -11,6 +11,7 @@ actually makes.
 | --- | --- |
 | `GET /v1/features` | the objects layer's `nwr[…](bbox); out center` query |
 | `GET /v1/features/at` | map details' `around:` + `is_in`/`pivot` pair, in one round trip |
+| `GET /v1/features/by-id` | `(id:…); (._;>;); out` for the elements a link or a map's pins name |
 | `GET /v1/status` | — |
 
 ### `GET /v1/features`
@@ -46,6 +47,26 @@ longer has to infer that from the result count.
 `nearby` is ordered by distance in meters, `containing` (areas the point falls
 in) by area in square meters, ascending — both computed in the database, so the
 client sorts nothing.
+
+### `GET /v1/features/by-id`
+
+```
+/v1/features/by-id?ids=node/240109189,way/27865468,relation/14296
+```
+
+Up to 500 ids, in the `node/123` form the other routes emit, comma-separated
+and repeatable. Unlike them it answers with each object's **own** geometry
+rather than a label point, since the caller draws the thing.
+
+An id the database does not hold is simply absent — the import keeps only
+tagged objects, and only within its region — so a caller must key the answer by
+`id` rather than by position, the more so as the order is the table's, not the
+request's.
+
+Whole geometry has no natural size bound, so a response stops after 300 000
+vertices and says `truncated: true`; the first feature is always whole, so a
+single large relation still answers. One country boundary is ~45 000 vertices
+and near a megabyte.
 
 ### `GET /v1/status`
 
@@ -153,6 +174,12 @@ Slovakia, on a 24-core box: import 4m30s, `post-import.sql` 2m15s, 5.6M rows in
 30–45 ms.
 
 ## Deployment (fm5)
+
+A push to `main` deploys: `.github/workflows/deploy.yml` connects as `freemap`
+(repo secret `DEPLOY_SSH_KEY`, variables `DEPLOY_HOST`/`DEPLOY_PORT`), resets
+`/opt/freemap-osm-api` to the pushed commit and runs `scripts/remote-deploy.sh`,
+which installs, builds, restarts, and waits for `/v1/status` before calling it
+done. The steps below are the first-time install that workflow assumes.
 
 ### Europe first, planet later
 
@@ -350,6 +377,11 @@ sudo -u freemap bash -c 'cd /opt/freemap-osm-api && pnpm install && pnpm build'
 
 sudo cp systemd/freemap-osm-api.service /etc/systemd/system/
 sudo systemctl enable --now freemap-osm-api
+
+# So the deploy workflow can restart it. Exact argv, no wildcard.
+echo 'freemap ALL=(root) NOPASSWD: /usr/bin/systemctl restart freemap-osm-api' \
+  | sudo tee /etc/sudoers.d/freemap-osm-api
+sudo chmod 0440 /etc/sudoers.d/freemap-osm-api
 curl -s localhost:3010/v1/status
 ```
 

@@ -5,14 +5,33 @@ import { Params } from '../predicates.js';
 import { FeaturesByIdResponseSchema } from '../schemas.js';
 import { fullFeatureJson } from '../sql.js';
 
-/** The form `featureJson` emits, so an id can be handed straight back. */
-const ID_RE = /^(node|way|relation)\/([1-9][0-9]{0,18})$/;
+/**
+ * The form `featureJson` emits, so an id can be handed straight back. Eighteen
+ * digits at most: a nineteenth fits the pattern but not `bigint`, and the cast
+ * would raise where nothing turns it into a 400.
+ */
+const ID_RE = /^(node|way|relation)\/([1-9][0-9]{0,17})$/;
 
 const typeLetter = { node: 'N', way: 'W', relation: 'R' } as const;
 
 // One request answers a whole map's worth of pins; past this it is a bulk
-// export, which the bounding-box route serves better.
-const MAX_IDS = 1000;
+// export, which the bounding-box route serves better. Held below what the URL
+// can carry — real ids run to ten digits, so 500 of them is already ~7 kB of
+// query string, and a request too long to send fails as a transport error
+// rather than as anything this route could explain.
+const MAX_IDS = 500;
+
+/**
+ * Vertices a response may carry before it is cut short. Unlike the other
+ * routes, this one emits whole geometry, so nothing else bounds it: one
+ * country boundary is ~45 000 vertices and near a megabyte of JSON, and a few
+ * hundred of them would be hundreds of megabytes materialised twice, once by
+ * `json_agg` and once as a JavaScript string.
+ *
+ * The first feature is always whole — the budget is tested against what
+ * precedes a feature, so asking for one large relation still answers with it.
+ */
+const MAX_POINTS = 300_000;
 
 const QuerySchema = z.object({
   /** Repeatable, and comma-separated within each value. */
@@ -61,15 +80,30 @@ export const featuresByIdRoute: FastifyPluginAsyncZod = async (app) => {
         })
         .join(', ');
 
+      const budget = params.add(MAX_POINTS);
+
       const doc = await queryJson(
-        `SELECT json_build_object(
+        `WITH hits AS (
+           SELECT osm_type, osm_id, tags, geom,
+                  -- What the features before this one already cost. Ordered so
+                  -- both which features come back and the order they come back
+                  -- in are the same for the same request.
+                  coalesce(sum(ST_NPoints(geom)) OVER (
+                    ORDER BY osm_type, osm_id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                  ), 0) AS preceding_points
+           FROM osm_object
+           WHERE (osm_type, osm_id) IN (${pairs})
+         )
+         SELECT json_build_object(
            'type', 'FeatureCollection',
+           'truncated', (
+             SELECT count(*) FROM hits WHERE preceding_points >= ${budget}::int
+           ) > 0,
            'features', coalesce((
-             SELECT json_agg(${fullFeatureJson()})
+             SELECT json_agg(${fullFeatureJson()} ORDER BY f.osm_type, f.osm_id)
              FROM (
-               SELECT osm_type, osm_id, tags, geom
-               FROM osm_object
-               WHERE (osm_type, osm_id) IN (${pairs})
+               SELECT * FROM hits WHERE preceding_points < ${budget}::int
              ) AS f
            ), '[]'::json)
          )::text AS doc`,

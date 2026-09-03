@@ -36,11 +36,14 @@ export const ContainingFeatureSchema = z.object({
 });
 
 /**
- * The object's own geometry, as PostGIS renders it — any GeoJSON type, so it is
- * described rather than enumerated.
+ * The object's own geometry, as PostGIS renders it. Any GeoJSON type, so the
+ * members are described rather than the types enumerated — `coordinates` is
+ * named so a generated client can reach it at all.
  */
 export const GeometrySchema = z.looseObject({
   type: z.string().meta({ example: 'LineString' }),
+  /** Absent only on a GeometryCollection, which carries `geometries` instead. */
+  coordinates: z.unknown().optional(),
 });
 
 /** A feature drawn rather than pinned: real geometry in place of the label point. */
@@ -63,7 +66,12 @@ export const FeaturesResponseSchema = z.object({
   features: z.array(FeatureSchema),
 });
 
-export const FeaturesByIdResponseSchema = featureCollection(FullFeatureSchema);
+/** `truncated`: the vertex budget was reached, so some ids have no feature here. */
+export const FeaturesByIdResponseSchema = z.object({
+  type: z.literal('FeatureCollection'),
+  truncated: z.boolean(),
+  features: z.array(FullFeatureSchema),
+});
 
 export const FeaturesAtResponseSchema = z.object({
   nearby: featureCollection(NearbyFeatureSchema),

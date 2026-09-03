@@ -25,9 +25,13 @@ pnpm build
 sudo systemctl restart freemap-osm-api
 
 # The unit returns before the port is up, so a deploy that starts and then dies
-# on a bad build would still look successful. Ask the service itself.
+# on a bad build would still look successful. Ask the service itself, on the
+# port the unit is actually configured with — systemd reads that file, this
+# shell doesn't.
+port=$(sed -n 's/^HTTP_PORT=//p' /etc/freemap-osm-api.conf 2>/dev/null | tail -1)
+
 for _ in $(seq 20); do
-  if curl -fsS --max-time 2 "localhost:${HTTP_PORT:-3010}/v1/status" >/dev/null; then
+  if curl -fsS --max-time 2 "localhost:${port:-3010}/v1/status" >/dev/null 2>&1; then
     echo "Deployed $(git rev-parse --short HEAD)"
     exit 0
   fi

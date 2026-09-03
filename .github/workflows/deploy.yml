@@ -10,9 +10,13 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+# Nothing here uses the token.
+permissions: {}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1
@@ -31,6 +35,11 @@ jobs:
             # the branch has diverged, and does so quietly enough that the
             # service keeps restarting on an old commit. Untracked files
             # (nothing here) are left alone.
+            #
+            # Pinned to the commit that triggered the run, not to whatever the
+            # branch tip has become: two quick pushes would otherwise both
+            # deploy the later tree, and the run reporting success for the
+            # earlier commit would never have run it.
             git fetch origin main
-            git reset --hard origin/main
+            git reset --hard ${{ github.sha }}
             bash scripts/remote-deploy.sh

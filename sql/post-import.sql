@@ -126,4 +126,10 @@ CREATE INDEX IF NOT EXISTS osm_object_geom_idx ON osm_object USING gist (geom);
 CREATE INDEX IF NOT EXISTS osm_object_area_geom_idx
   ON osm_object USING gist (geom) WHERE area IS NOT NULL;
 
+-- What /v1/features/by-id looks up. osm2pgsql's flex output creates this index
+-- itself under `--slim` (`ids.create_index` defaults to `auto`), so this is
+-- normally a no-op — but the route would seq-scan the whole table without it,
+-- and an import done differently would leave nothing to say so.
+CREATE INDEX IF NOT EXISTS osm_object_id_idx ON osm_object (osm_type, osm_id);
+
 ANALYZE osm_object;

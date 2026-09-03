@@ -66,10 +66,19 @@ export const FeaturesResponseSchema = z.object({
   features: z.array(FeatureSchema),
 });
 
-/** `truncated`: the vertex budget was reached, so some ids have no feature here. */
 export const FeaturesByIdResponseSchema = z.object({
   type: z.literal('FeatureCollection'),
-  truncated: z.boolean(),
+  /**
+   * Carries its meaning into the OpenAPI document rather than only into this
+   * file: without it a generated client reads a missing id as "not in the
+   * database", which is the one thing truncation does not mean.
+   */
+  truncated: z.boolean().meta({
+    description:
+      'The vertex budget was reached, so the tail of the (osm_type, osm_id) ' +
+      'order was dropped: ids the database does hold may have no feature ' +
+      'here. Ask for the remainder in smaller batches.',
+  }),
   features: z.array(FullFeatureSchema),
 });
 

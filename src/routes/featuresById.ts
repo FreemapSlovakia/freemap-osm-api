@@ -15,11 +15,17 @@ const ID_RE = /^(node|way|relation)\/([1-9][0-9]{0,17})$/;
 const typeLetter = { node: 'N', way: 'W', relation: 'R' } as const;
 
 // One request answers a whole map's worth of pins; past this it is a bulk
-// export, which the bounding-box route serves better. Held below what the URL
-// can carry — real ids run to ten digits, so 500 of them is already ~7 kB of
-// query string, and a request too long to send fails as a transport error
-// rather than as anything this route could explain.
-const MAX_IDS = 500;
+// export, which the bounding-box route serves better.
+//
+// Held below what an HTTP/1.1 request line can carry, which is the real limit
+// and is lower than it looks: `/` and `,` percent-encode to three bytes each,
+// and node ids now run to eleven digits, so one id costs 21 bytes of query
+// string. nginx's default 8 kB request-line buffer is reached around 380 ids —
+// measured against the deployment, 380 answers and 400 does not. Past it the
+// request fails at nginx as a 414 that never reaches this route, so nothing
+// here could explain it to the caller. HTTP/2 escapes the limit by compressing
+// headers, which is why a browser sees a higher ceiling than curl does.
+const MAX_IDS = 300;
 
 /**
  * Vertices a response may carry before it is cut short. Unlike the other
@@ -60,7 +66,12 @@ export const featuresByIdRoute: FastifyPluginAsyncZod = async (app) => {
       description:
         'Answers with each object’s own geometry. An id the database does ' +
         'not hold is simply absent from the result — the import keeps only ' +
-        'tagged objects, and only within its region.',
+        'tagged objects, and only within its region. That is not the only ' +
+        'reason an id can be missing, though: a response also stops after ' +
+        `${MAX_POINTS.toLocaleString('en-US')} vertices and sets ` +
+        '`truncated`, dropping the tail of the `(osm_type, osm_id)` order it ' +
+        'answers in. So key the answer by `id` rather than by position, and ' +
+        'read `truncated` as “the rest needs a second, smaller request”.',
       querystring: QuerySchema,
       response: { 200: FeaturesByIdResponseSchema },
     },

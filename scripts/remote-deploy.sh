@@ -28,10 +28,26 @@ sudo systemctl restart freemap-osm-api
 # on a bad build would still look successful. Ask the service itself, on the
 # port the unit is actually configured with — systemd reads that file, this
 # shell doesn't.
-port=$(sed -n 's/^HTTP_PORT=//p' /etc/freemap-osm-api.conf 2>/dev/null | tail -1)
+#
+# Sourced rather than grepped, and never allowed to fail the script. `set -e`
+# takes a failing command substitution as a reason to abort, so reading this
+# with `sed` would abandon the deploy right here — after the restart, before
+# the check that the restart worked — if the file were missing. And the value
+# may be quoted, which is valid in an EnvironmentFile and which a `sed` would
+# leave in the URL, failing every probe against a service that is in fact up.
+HTTP_PORT=''
+# shellcheck disable=SC1091
+. /etc/freemap-osm-api.conf 2>/dev/null || true
+
+port=${HTTP_PORT:-3010}
+
+# Anything the URL cannot carry (stray quoting, CRLF) would fail every probe
+# and report a healthy deploy as a failure, so fall back to the default port
+# rather than to a value that cannot work.
+[[ $port =~ ^[0-9]+$ ]] || port=3010
 
 for _ in $(seq 20); do
-  if curl -fsS --max-time 2 "localhost:${port:-3010}/v1/status" >/dev/null 2>&1; then
+  if curl -fsS --max-time 2 "localhost:${port}/v1/status" >/dev/null 2>&1; then
     echo "Deployed $(git rev-parse --short HEAD)"
     exit 0
   fi

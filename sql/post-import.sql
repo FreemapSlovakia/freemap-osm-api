@@ -130,6 +130,13 @@ CREATE INDEX IF NOT EXISTS osm_object_area_geom_idx
 -- itself under `--slim` (`ids.create_index` defaults to `auto`), so this is
 -- normally a no-op — but the route would seq-scan the whole table without it,
 -- and an import done differently would leave nothing to say so.
-CREATE INDEX IF NOT EXISTS osm_object_id_idx ON osm_object (osm_type, osm_id);
+--
+-- The name is not free: it has to be the one Postgres gives osm2pgsql's own
+-- unnamed CREATE INDEX, because IF NOT EXISTS matches on the name and not on
+-- the definition. Under any other name this builds a second, identical btree —
+-- 167 MB beside a 2.7 GB table on the Slovakia extract, tens of GB on Europe —
+-- and every minutely diff then maintains both.
+CREATE INDEX IF NOT EXISTS osm_object_osm_type_osm_id_idx
+  ON osm_object (osm_type, osm_id);
 
 ANALYZE osm_object;

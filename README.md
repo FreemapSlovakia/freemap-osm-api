@@ -54,19 +54,32 @@ client sorts nothing.
 /v1/features/by-id?ids=node/240109189,way/27865468,relation/14296
 ```
 
-Up to 500 ids, in the `node/123` form the other routes emit, comma-separated
+Up to 300 ids, in the `node/123` form the other routes emit, comma-separated
 and repeatable. Unlike them it answers with each object's **own** geometry
 rather than a label point, since the caller draws the thing.
 
+The cap is what an HTTP/1.1 request line holds, not what the query costs: `/`
+and `,` percent-encode to three bytes each and node ids now run to eleven
+digits, so one id is 21 bytes of query string and nginx's default 8 kB buffer
+is reached around 380 — measured, 380 answers and 400 does not. Past that the
+request fails at nginx as a 414 the API never sees, so nothing it returns could
+explain it. HTTP/2 compresses headers and escapes the limit, which is why a
+browser gets further than curl does; the cap is set for the client that
+doesn't.
+
 An id the database does not hold is simply absent — the import keeps only
 tagged objects, and only within its region — so a caller must key the answer by
-`id` rather than by position, the more so as the order is the table's, not the
-request's.
+`id` rather than by position.
 
 Whole geometry has no natural size bound, so a response stops after 300 000
 vertices and says `truncated: true`; the first feature is always whole, so a
 single large relation still answers. One country boundary is ~45 000 vertices
 and near a megabyte.
+
+Absence therefore has two causes, and `truncated` is what tells them apart. The
+answer is ordered by `(osm_type, osm_id)` ascending and truncation drops the
+tail of that order, so nodes always survive — a whole request of them costs 300
+vertices — then relations, and ways are what a truncated response loses.
 
 ### `GET /v1/status`
 

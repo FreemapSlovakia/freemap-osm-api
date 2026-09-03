@@ -13,6 +13,7 @@ import { getStatus } from './db.js';
 import { FilterError } from './predicates.js';
 import { featuresRoute } from './routes/features.js';
 import { featuresAtRoute } from './routes/featuresAt.js';
+import { featuresByIdRoute } from './routes/featuresById.js';
 import { statusRoute } from './routes/status.js';
 
 export async function buildApp() {
@@ -80,6 +81,8 @@ export async function buildApp() {
   await app.register(featuresRoute);
 
   await app.register(featuresAtRoute);
+
+  await app.register(featuresByIdRoute);
 
   await app.register(statusRoute);
 

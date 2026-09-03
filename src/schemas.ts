@@ -35,6 +35,20 @@ export const ContainingFeatureSchema = z.object({
   area: z.number(),
 });
 
+/**
+ * The object's own geometry, as PostGIS renders it — any GeoJSON type, so it is
+ * described rather than enumerated.
+ */
+export const GeometrySchema = z.looseObject({
+  type: z.string().meta({ example: 'LineString' }),
+});
+
+/** A feature drawn rather than pinned: real geometry in place of the label point. */
+export const FullFeatureSchema = z.object({
+  ...FeatureSchema.omit({ geometry: true }).shape,
+  geometry: GeometrySchema,
+});
+
 export function featureCollection<T extends z.ZodType>(feature: T) {
   return z.object({
     type: z.literal('FeatureCollection'),
@@ -48,6 +62,8 @@ export const FeaturesResponseSchema = z.object({
   truncated: z.boolean(),
   features: z.array(FeatureSchema),
 });
+
+export const FeaturesByIdResponseSchema = featureCollection(FullFeatureSchema);
 
 export const FeaturesAtResponseSchema = z.object({
   nearby: featureCollection(NearbyFeatureSchema),

@@ -25,10 +25,16 @@ jobs:
           port: ${{ vars.DEPLOY_PORT }} # optional; defaults to 22
           username: freemap
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # Without this the script runs on after a failing command, so a
-          # deploy that never updated the code still reports success.
-          script_stop: true
           script: |
+            # `set -e` in the script rather than the action's `script_stop`,
+            # which is what this used to say: the input was dropped somewhere
+            # in appleboy/ssh-action v1.x and is now ignored with only a
+            # warning annotation, so the guard was not in force. Without it
+            # every line runs and the step reports whatever the *last* one
+            # returned — a `git reset` that could not find the commit would
+            # rebuild and restart the old tree and still come out green.
+            set -e
+
             cd /opt/freemap-osm-api
             # The server is a mirror of main, never a place to commit, so
             # overwrite it rather than merge: `git pull --ff-only` refuses once

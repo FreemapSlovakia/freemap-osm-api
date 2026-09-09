@@ -139,4 +139,38 @@ CREATE INDEX IF NOT EXISTS osm_object_area_geom_idx
 CREATE INDEX IF NOT EXISTS osm_object_osm_type_osm_id_idx
   ON osm_object (osm_type, osm_id);
 
+-- PostGIS prices ST_Intersects at COST 5000 — 12.5 planner units a row, set
+-- for geometries far heavier than the ones this answers about. /v1/features
+-- pays it only on rows the tag index has already found, but the planner cannot
+-- see that: at that price it would sooner spend 8500 units on a second index
+-- than recheck 1200 rows, so it ANDs the tag bitmap with a GiST scan of every
+-- geometry in the viewport. `aeroway=aerodrome` across central Europe then
+-- walks 1.76M index entries — 66 MB, 400 ms — to save a thousand heap fetches
+-- from a 114-row answer. At COST 100 the recheck is priced nearer what a POI
+-- really costs and the plan collapses to the tag index alone: 400 ms to 0.4.
+--
+-- Only the public ST_Intersects matters; lowering _ST_Intersects changes
+-- nothing, because that is not what the query calls. The setting is
+-- database-wide, but PostGIS is installed per database and /v1/features is its
+-- only caller here — osm2pgsql does its geometry work in C++, and
+-- /v1/features/at asks with ST_DWithin.
+--
+-- Wrapped because this file is run as the import role, which does not own the
+-- extension. Nothing downstream depends on the cost — it only tips a plan the
+-- API also steers from its own side — so being refused is worth a warning
+-- rather than a failed import. ALTER EXTENSION postgis UPDATE puts the old cost
+-- back, which is the other reason this belongs in a file meant to be re-run.
+DO $$
+BEGIN
+  ALTER FUNCTION st_intersects(geometry, geometry) COST 100;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE WARNING 'could not lower the cost of ST_Intersects: %', SQLERRM
+      USING HINT =
+        'run "ALTER FUNCTION st_intersects(geometry, geometry) COST 100;" as '
+        'the owner of the postgis extension, or /v1/features plans a needless '
+        'index scan over every geometry in the viewport';
+END
+$$;
+
 ANALYZE osm_object;

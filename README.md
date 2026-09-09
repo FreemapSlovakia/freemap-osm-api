@@ -143,6 +143,55 @@ startup, so a process that outlives a *newly denied* key keeps asking the index
 for `key=value` entries the rebuild removed — and answers an empty
 `FeatureCollection` with no error.
 
+### Which index leads
+
+Two indexes can answer a `/v1/features` query and only one of them should. Left
+to choose, Postgres takes a third option — a bitmap AND of both — that a `LIMIT`
+can never make cheap, because both bitmaps are built in full before the first
+row comes out. On `f=aeroway=aerodrome` across central Europe it walked 1.76 M
+geometry index entries, 66 MB and 400 ms, to narrow a 114-row answer down to the
+32 inside the box.
+
+So the route picks a side, and it picks the more selective half rather than
+applying a fixed rule to the filter alone — neither side wins on its own terms.
+`f=natural=scrub` anchors 49 k rows on the Slovakia extract, which beats a
+continent-sized box (63 ms against 189) and loses to a city block (74 ms against
+14). Both halves are therefore sized before the query runs:
+
+- the filter, from the same most-common-element statistics the planner reads,
+  loaded once at startup like the value-index rules — free;
+- the viewport, from `_postgis_selectivity()`, the N-D histogram behind PostGIS's
+  own estimates. On this extract it answers 1.76 M against 1.75 M actual for a
+  box over central Europe and 44.6 k against 46.2 k for a city one. It costs
+  0.2 ms for a viewport and 20 ms for a continent — the same histogram walk the
+  planner does anyway on the branch it may pick. Under 2 000 expected matches
+  the filter has already won and the viewport is not sized at all.
+
+A predicate whose value `kv` could not carry (`name*`, `addr:*`, dates, anything
+over 40 characters — see above) is answered by `fm_tag_matches()` on every row
+its key anchors, and nothing prunes those in the tag-leading shape. They are
+counted treble, measured at ~3.6 µs a row against ~1.4 µs for a plain
+containment hit: `f=website=…` anchors 42 k rows and is 148 ms that way against
+19 ms the other, while `f=amenity=restaurant,name=…` anchors few enough to stay
+on the cheap side of the same comparison.
+
+When the tag index leads, the geometry tests sit behind an `OFFSET 0` barrier so
+they cannot reach the GiST index and bring the bitmap AND back. Missing
+statistics settle the choice the way the route ran before it weighed anything:
+an unknown filter estimate is infinite, an unknown viewport zero, and either
+sends the geometry index in front.
+
+[`sql/post-import.sql`](sql/post-import.sql) also lowers `ST_Intersects` from
+PostGIS's `COST 5000` to 100, which is what settles the middle ground where
+neither side is clearly selective. That one statement needs the owner of the
+postgis extension, so on an already-imported database it will not go in as the
+import role; the file raises a warning instead of failing, and it can be run
+once by hand:
+
+```sql
+ALTER FUNCTION st_intersects(geometry, geometry) COST 100;
+```
+
 ### Known differences from Overpass
 
 - Relations are stored as multipolygons (`type=multipolygon`/`boundary`) or

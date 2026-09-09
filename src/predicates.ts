@@ -28,14 +28,24 @@ function assertKey(key: string): void {
 }
 
 /**
+ * One `f` value, compiled: the SQL condition, the `kv` elements it looks the
+ * rows up by, and whether answering it needs `fm_tag_matches` on every one of
+ * them. The caller sizes the match set from all three before running anything —
+ * see `estimateTagRows`.
+ */
+export type Clause = { sql: string; contains: string[]; recheck: boolean };
+
+/**
  * One `f` value → one SQL condition. Predicates are comma-separated and ANDed:
  * `k=v` matches a value, `k` the key's presence, `!k` its absence. All the
  * positive ones collapse into a single `kv @> ARRAY[…]` containment test.
  */
-export function clauseToSql(clause: string, params: Params): string {
+export function clauseToSql(clause: string, params: Params): Clause {
   const contains: string[] = [];
 
   const conditions: string[] = [];
+
+  let recheck = false;
 
   for (const raw of clause.split(',')) {
     const predicate = raw.trim();
@@ -87,6 +97,8 @@ export function clauseToSql(clause: string, params: Params): string {
       // the rows that come back.
       contains.push(key);
 
+      recheck = true;
+
       conditions.push(
         `fm_tag_matches(tags, ${params.add(key)}, ${params.add(value)})`,
       );
@@ -102,16 +114,29 @@ export function clauseToSql(clause: string, params: Params): string {
 
   conditions.unshift(`kv @> ${params.add(contains)}::text[]`);
 
-  return conditions.length === 1
-    ? (conditions[0] as string)
-    : `(${conditions.join(' AND ')})`;
+  return {
+    sql:
+      conditions.length === 1
+        ? (conditions[0] as string)
+        : `(${conditions.join(' AND ')})`,
+    contains,
+    recheck,
+  };
 }
 
-/** The `f` values ORed together, or `true` when nothing was asked for. */
-export function clausesToSql(clauses: string[], params: Params): string {
+/** The whole `f` filter: the ORed condition, and what each clause will cost. */
+export type Filter = { sql: string; clauses: Clause[] };
+
+/** The `f` values ORed together. */
+export function clausesToSql(clauses: string[], params: Params): Filter {
   if (clauses.length === 0) {
     throw new FilterError('at least one f parameter is required');
   }
 
-  return clauses.map((clause) => clauseToSql(clause, params)).join(' OR ');
+  const compiled = clauses.map((clause) => clauseToSql(clause, params));
+
+  return {
+    sql: compiled.map(({ sql }) => sql).join(' OR '),
+    clauses: compiled,
+  };
 }

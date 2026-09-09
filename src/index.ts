@@ -1,8 +1,10 @@
 import { buildApp } from './app.js';
 import { config } from './config.js';
-import { loadValueIndexRules, pool } from './db.js';
+import { loadTagFrequencies, loadValueIndexRules, pool } from './db.js';
 
 await loadValueIndexRules();
+
+await loadTagFrequencies();
 
 const app = await buildApp();
 

@@ -1,7 +1,12 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { estimateTagRows, estimateViewportRows, queryJson } from '../db.js';
-import { clausesToSql, Params } from '../predicates.js';
+import {
+  estimateTagRows,
+  estimateViewportRows,
+  queryJson,
+  tableRows,
+} from '../db.js';
+import { clausesToSql, KV_HIDDEN, Params } from '../predicates.js';
 import { FeaturesResponseSchema } from '../schemas.js';
 import { featureJson } from '../sql.js';
 
@@ -88,12 +93,13 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
         bbox.map((coord) => params.add(coord)).join(', ') +
         ', 4326), 3857)';
 
-      const filter = clausesToSql(f, params);
-
-      const limitParam = params.add(limit);
+      // Parsed once against throwaway bind values, only to size the match set:
+      // which index leads decides how the real SQL has to be written, so it has
+      // to be known before the filter is built for keeps.
+      const { clauses } = clausesToSql(f, new Params());
 
       // The clauses are ORed, so their match sets add up.
-      const tagRows = filter.clauses.reduce(
+      const tagRows = clauses.reduce(
         (total, { contains, recheck }) =>
           total +
           estimateTagRows(contains) * (recheck ? RECHECK_ROW_WEIGHT : 1),
@@ -113,21 +119,52 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
       // central Europe it walked 1.76M index entries to narrow 114 rows to 32.
       // Choosing a side here is what takes that plan off the table.
       //
-      // An unknown tag estimate is Infinity and an unknown viewport 0, so
-      // either one missing settles this the way the route ran before it asked.
+      // Tag-leading walks the whole match set — the GIN bitmap is built in
+      // full before a row comes out, so the limit cannot bound it. Geometry-
+      // leading streams the viewport in index order and stops at the limit,
+      // reading about `limit × tableRows / tagRows` rows to find that many
+      // matches. The two meet at sqrt(limit × tableRows): a ceiling with
+      // nothing to tune that follows the import instead of the machine it was
+      // measured on — 55k rows on the Slovakia extract, 561k on Europe, and on
+      // Europe that is where `amenity=pharmacy` (213k, 0.31 s against 1.14 s)
+      // and `tourism=information` (1.14M, 0.73 s against 0.09 s) fall either
+      // side of it. An unknown table size reads as 0 and sends everything to
+      // the geometry index, which is how the route ran before it weighed
+      // anything; an unknown tag estimate is Infinity and lands there too.
+      //
+      // The ceiling prices that early exit, which a clause carrying a recheck
+      // cannot count on: its match set is the rows its *key* anchors, while
+      // what survives `fm_tag_matches` may be almost none of them, so the
+      // geometry scan runs to the end of the viewport instead of stopping.
+      // `f=website=…` over a continent is 0.15 s leading with tags and 0.63 s
+      // the other way, for exactly that reason — so the ceiling is not applied
+      // to those, and the viewport comparison below decides them alone.
+      const rows = tableRows();
+
+      const recheck = clauses.some((clause) => clause.recheck);
+
       const tagLead =
-        tagRows <= TAG_LEAD_ALWAYS_ROWS ||
-        tagRows < (await estimateViewportRows(bbox));
+        rows !== undefined &&
+        (recheck || tagRows < Math.sqrt(limit * rows)) &&
+        (tagRows <= TAG_LEAD_ALWAYS_ROWS ||
+          tagRows < (await estimateViewportRows(bbox)));
+
+      // Built for keeps, now that the shape is settled. Leading with geometry
+      // means the tag index must not be offered at all, or the planner puts the
+      // two together into the bitmap AND again.
+      const filter = clausesToSql(f, params, tagLead ? undefined : KV_HIDDEN);
+
+      const limitParam = params.add(limit);
 
       // In both shapes the cheap overlap operator runs before ST_Intersects,
       // which drops the objects only their bounding box put in the viewport: a
       // country-wide route relation would otherwise match every viewport inside
       // its box, which Overpass does not do either.
       const source = tagLead
-        ? // OFFSET 0 is an optimization barrier: it keeps the geometry tests
-          // from being pushed down into the subquery, where they would reach
-          // the GiST index and bring the bitmap AND back. Out here they are
-          // filters on the rows the tag index already found.
+        ? // The mirror of KV_HIDDEN. OFFSET 0 is an optimization barrier: it
+          // keeps the geometry tests from being pushed down into the subquery,
+          // where they would reach the GiST index and bring the bitmap AND
+          // back. Out here they are filters on the rows the tag index found.
           `(
              SELECT osm_type, osm_id, tags, geom
              FROM osm_object
@@ -136,8 +173,9 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
            ) AS c
            WHERE c.geom && ${envelope}
              AND ST_Intersects(c.geom, ${envelope})`
-        : // The viewport is the selective half: the geometry index leads and
-          // streams rows until the limit is met.
+        : // The viewport is the selective half: the geometry index leads, and
+          // with the tag test unable to reach an index it streams rows in index
+          // order and stops at the limit.
           `osm_object
            WHERE geom && ${envelope}
              AND ST_Intersects(geom, ${envelope})

@@ -152,45 +152,63 @@ row comes out. On `f=aeroway=aerodrome` across central Europe it walked 1.76 M
 geometry index entries, 66 MB and 400 ms, to narrow a 114-row answer down to the
 32 inside the box.
 
-So the route picks a side, and it picks the more selective half rather than
-applying a fixed rule to the filter alone — neither side wins on its own terms.
-`f=natural=scrub` anchors 49 k rows on the Slovakia extract, which beats a
-continent-sized box (63 ms against 189) and loses to a city block (74 ms against
-14). Both halves are therefore sized before the query runs:
+So the route picks a side, and writes the query so the other index cannot be
+reached: the losing predicate goes behind an `OFFSET 0` barrier, or reads `kv`
+through `(kv || '{}')`, which no index can match and which selects exactly the
+same rows. Offering both is what lets the bitmap AND back in.
+
+It picks the more selective half rather than applying a fixed rule to the filter
+alone, because neither side wins on its own terms. `f=natural=scrub` anchors
+49 k rows on the Slovakia extract, which beats a continent-sized box (63 ms
+against 189) and loses to a city block. Both halves are sized before the query
+runs:
 
 - the filter, from the same most-common-element statistics the planner reads,
   loaded once at startup like the value-index rules — free;
 - the viewport, from `_postgis_selectivity()`, the N-D histogram behind PostGIS's
-  own estimates. On this extract it answers 1.76 M against 1.75 M actual for a
-  box over central Europe and 44.6 k against 46.2 k for a city one. It costs
+  own estimates. On Europe it answers 36.5 M against 36.4 M actual for a box over
+  central Europe, and on Slovakia 44.6 k against 46.2 k for a city one. It costs
   0.2 ms for a viewport and 20 ms for a continent — the same histogram walk the
   planner does anyway on the branch it may pick. Under 2 000 expected matches
   the filter has already won and the viewport is not sized at all.
 
+Leading with tags walks the whole match set. Leading with geometry streams the
+viewport in index order and stops at the limit, reading roughly
+`limit × tableRows / tagRows` rows to find that many matches — so the two meet at
+**`sqrt(limit × tableRows)`**. That ceiling has nothing to tune and follows the
+import rather than the machine it was measured on: 55 k rows on the Slovakia
+extract, 561 k on Europe. Both are where the measurements actually cross —
+on Europe `amenity=pharmacy` (213 k) is 0.31 s leading with tags against 1.14 s
+the other way, while `natural=scrub` (3.69 M) is 2.1 s against 0.02 s.
+
 A predicate whose value `kv` could not carry (`name*`, `addr:*`, dates, anything
 over 40 characters — see above) is answered by `fm_tag_matches()` on every row
-its key anchors, and nothing prunes those in the tag-leading shape. They are
-counted treble, measured at ~3.6 µs a row against ~1.4 µs for a plain
-containment hit: `f=website=…` anchors 42 k rows and is 148 ms that way against
-19 ms the other, while `f=amenity=restaurant,name=…` anchors few enough to stay
-on the cheap side of the same comparison.
+its key anchors. Those rows count treble when the two sides are weighed,
+measured at ~3.6 µs against ~1.4 µs for a plain containment hit. The ceiling is
+not applied to them at all: it prices an early exit they cannot deliver, since
+what survives the recheck may be almost none of the rows the key anchored, and
+the geometry scan then runs to the end of the viewport instead of stopping.
+`f=website=…` over a continent is 0.15 s leading with tags and 0.63 s the other
+way for exactly that reason.
 
-When the tag index leads, the geometry tests sit behind an `OFFSET 0` barrier so
-they cannot reach the GiST index and bring the bitmap AND back. Missing
-statistics settle the choice the way the route ran before it weighed anything:
-an unknown filter estimate is infinite, an unknown viewport zero, and either
-sends the geometry index in front.
+Missing statistics settle the choice the way the route ran before it weighed
+anything: an unknown filter estimate is infinite, an unknown viewport zero, and
+either sends the geometry index in front.
 
 [`sql/post-import.sql`](sql/post-import.sql) also lowers `ST_Intersects` from
-PostGIS's `COST 5000` to 100, which is what settles the middle ground where
-neither side is clearly selective. That one statement needs the owner of the
-postgis extension, so on an already-imported database it will not go in as the
-import role; the file raises a warning instead of failing, and it can be run
-once by hand:
+PostGIS's `COST 5000` to 100, without which the geometry-leading branch is
+planned as a bitmap scan rather than a streaming one — 15.7 s against 0.2 s for
+`natural=scrub` over Europe. It needs the owner of the postgis extension, so on
+an already-imported database it will not go in as the import role; the file
+raises a warning instead of failing, and it can be run once by hand:
 
 ```sql
 ALTER FUNCTION st_intersects(geometry, geometry) COST 100;
 ```
+
+The cost is a property of one database — extensions are installed per database —
+so on fm5 it applies to `osm` and not to `freemap`, where the rendering tables
+live.
 
 ### Known differences from Overpass
 

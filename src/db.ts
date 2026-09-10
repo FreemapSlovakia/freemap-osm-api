@@ -174,6 +174,11 @@ async function readTagFrequencies(): Promise<void> {
   };
 }
 
+/** Rows in `osm_object`, as the last ANALYZE counted them. */
+export function tableRows(): number | undefined {
+  return tagFrequencies?.rows;
+}
+
 /**
  * How many rows the viewport holds, which is the other half of the choice
  * /v1/features makes — a filter only leads if it is more selective than the box

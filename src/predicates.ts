@@ -16,6 +16,19 @@ export class Params {
 /** A filter the API cannot serve; surfaces as 400 with the message. */
 export class FilterError extends Error {}
 
+/**
+ * How the generated SQL reaches the `kv` column. `KV_INDEXED` lets the GIN index
+ * answer the containment test. `KV_HIDDEN` is the same value read through an
+ * expression, which no index can match — concatenating the empty array changes
+ * nothing about the value, and verified against 581M production rows to select
+ * exactly the same set. The route picks it to keep the tag index out of a plan
+ * that should lead with geometry, where offering both is what lets the planner
+ * build the bitmap AND neither side wants.
+ */
+export const KV_INDEXED = 'kv';
+
+export const KV_HIDDEN = "(kv || '{}'::text[])";
+
 /** Tag-key syntax, as far as any query parameter is concerned. */
 export function isValidKey(key: string): boolean {
   return KEY_RE.test(key);
@@ -40,7 +53,11 @@ export type Clause = { sql: string; contains: string[]; recheck: boolean };
  * `k=v` matches a value, `k` the key's presence, `!k` its absence. All the
  * positive ones collapse into a single `kv @> ARRAY[…]` containment test.
  */
-export function clauseToSql(clause: string, params: Params): Clause {
+export function clauseToSql(
+  clause: string,
+  params: Params,
+  kv: string = KV_INDEXED,
+): Clause {
   const contains: string[] = [];
 
   const conditions: string[] = [];
@@ -112,7 +129,7 @@ export function clauseToSql(clause: string, params: Params): Clause {
     );
   }
 
-  conditions.unshift(`kv @> ${params.add(contains)}::text[]`);
+  conditions.unshift(`${kv} @> ${params.add(contains)}::text[]`);
 
   return {
     sql:
@@ -128,12 +145,16 @@ export function clauseToSql(clause: string, params: Params): Clause {
 export type Filter = { sql: string; clauses: Clause[] };
 
 /** The `f` values ORed together. */
-export function clausesToSql(clauses: string[], params: Params): Filter {
+export function clausesToSql(
+  clauses: string[],
+  params: Params,
+  kv: string = KV_INDEXED,
+): Filter {
   if (clauses.length === 0) {
     throw new FilterError('at least one f parameter is required');
   }
 
-  const compiled = clauses.map((clause) => clauseToSql(clause, params));
+  const compiled = clauses.map((clause) => clauseToSql(clause, params, kv));
 
   return {
     sql: compiled.map(({ sql }) => sql).join(' OR '),

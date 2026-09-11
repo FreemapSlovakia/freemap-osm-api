@@ -76,7 +76,13 @@ const QuerySchema = z.object({
     .transform((value) => parseBbox(value) as Bbox),
   /** Repeatable; the clauses are ORed. */
   f: stringArray.meta({ example: 'amenity=restaurant' }),
-  limit: z.coerce.number().int().min(1).max(2000).default(500),
+  /**
+   * The ceiling follows what an answer costs to carry, not what it costs to
+   * find: with `fields` an object is ~60 bytes, so 20 000 of them are about
+   * what 2 000 were with every tag. A client that tiles the map and quarters
+   * a truncated tile makes ten times fewer requests for the same area.
+   */
+  limit: z.coerce.number().int().min(1).max(20_000).default(500),
   /**
    * Comma-separated tag keys to keep in `properties`; absent means all tags.
    * The keys the filter matched on are always kept, so the client can tell

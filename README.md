@@ -31,7 +31,9 @@ Answers a GeoJSON `FeatureCollection` whose features carry `id` (`way/123`),
 `properties` (all tags), a point `geometry` (`ST_PointOnSurface`, so it is
 inside the polygon — better than Overpass's bbox center) and the full
 geometry's `bbox`. `truncated: true` says the limit was hit, so the client no
-longer has to infer that from the result count.
+longer has to infer that from the result count. `limit` goes up to 20 000
+(default 500); the top end is meant for `fields`, below — with every tag it
+is a multi-megabyte answer.
 
 `fields=name,brand` narrows `properties` to the named keys; the keys the `f`
 clauses matched on are always kept, so a client can still tell what each

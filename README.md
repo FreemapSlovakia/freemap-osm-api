@@ -33,6 +33,17 @@ inside the polygon — better than Overpass's bbox center) and the full
 geometry's `bbox`. `truncated: true` says the limit was hit, so the client no
 longer has to infer that from the result count.
 
+`fields=name,brand` narrows `properties` to the named keys; the keys the `f`
+clauses matched on are always kept, so a client can still tell what each
+object was found for. A key the object lacks is simply absent, an object with
+none of them gets `{}`. Without `fields` every tag comes back, as before.
+
+Worth asking for when the answer is drawn rather than read: 2000 objects with
+all their tags are ~350 kB of JSON before gzip — addresses, opening hours,
+contacts, wikidata — and a client pinning them on a map uses two of the keys.
+The pick happens in the database, on the rows the query already found, so it
+costs nothing on the query side and takes most of the response off the wire.
+
 ### `GET /v1/features/at`
 
 ```

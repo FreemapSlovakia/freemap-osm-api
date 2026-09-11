@@ -6,9 +6,15 @@ import {
   queryJson,
   tableRows,
 } from '../db.js';
-import { clausesToSql, KV_HIDDEN, Params } from '../predicates.js';
+import {
+  clausesToSql,
+  FilterError,
+  isValidKey,
+  KV_HIDDEN,
+  Params,
+} from '../predicates.js';
 import { FeaturesResponseSchema } from '../schemas.js';
-import { featureJson } from '../sql.js';
+import { featureJson, pickedTags } from '../sql.js';
 
 /** Web Mercator is undefined beyond this. */
 const MAX_LAT = 85.0511;
@@ -71,6 +77,20 @@ const QuerySchema = z.object({
   /** Repeatable; the clauses are ORed. */
   f: stringArray.meta({ example: 'amenity=restaurant' }),
   limit: z.coerce.number().int().min(1).max(2000).default(500),
+  /**
+   * Comma-separated tag keys to keep in `properties`; absent means all tags.
+   * The keys the filter matched on are always kept, so the client can tell
+   * what an object was found for without naming those keys twice.
+   */
+  fields: z
+    .string()
+    .optional()
+    .meta({
+      example: 'name,brand',
+      description:
+        'Tag keys to keep in properties, comma-separated. Absent keeps every ' +
+        'tag; the keys used in f are always kept.',
+    }),
 });
 
 export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
@@ -84,7 +104,7 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
     },
     serializerCompiler: () => (data) => data as string,
     handler: async (request, reply) => {
-      const { bbox, f, limit } = request.query;
+      const { bbox, f, limit, fields } = request.query;
 
       const params = new Params();
 
@@ -156,6 +176,23 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
 
       const limitParam = params.add(limit);
 
+      // Narrowed properties: what was asked for, plus what the filter matched
+      // on. Bound as one array, so the SQL shape does not change with the
+      // list and the plan stays cached.
+      const properties =
+        fields === undefined
+          ? undefined
+          : pickedTags(
+              params.add([
+                ...new Set([
+                  ...parseFields(fields),
+                  ...filter.clauses.flatMap((clause) =>
+                    clause.contains.map((entry) => entry.split('=')[0] ?? ''),
+                  ),
+                ]),
+              ]),
+            );
+
       // In both shapes the cheap overlap operator runs before ST_Intersects,
       // which drops the objects only their bounding box put in the viewport: a
       // country-wide route relation would otherwise match every viewport inside
@@ -191,7 +228,7 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
            'type', 'FeatureCollection',
            'truncated', (SELECT count(*) FROM hits) > ${limitParam}::int,
            'features', coalesce((
-             SELECT json_agg(${featureJson()})
+             SELECT json_agg(${featureJson('', properties)})
              FROM (SELECT * FROM hits LIMIT ${limitParam}::int) AS f
            ), '[]'::json)
          )::text AS doc`,
@@ -203,3 +240,26 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
     },
   });
 };
+
+/**
+ * The `fields` list, validated the way `keys` is on `/v1/features/at`: an
+ * explicit parameter that names nothing is a client bug, not "all tags".
+ */
+function parseFields(fields: string): string[] {
+  const list = fields
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean);
+
+  if (list.length === 0) {
+    throw new FilterError('fields must not be empty');
+  }
+
+  const invalid = list.filter((key) => !isValidKey(key));
+
+  if (invalid.length > 0) {
+    throw new FilterError(`not valid tag keys: ${invalid.join(', ')}`);
+  }
+
+  return list;
+}

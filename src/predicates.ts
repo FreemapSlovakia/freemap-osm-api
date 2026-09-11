@@ -46,7 +46,13 @@ function assertKey(key: string): void {
  * them. The caller sizes the match set from all three before running anything —
  * see `estimateTagRows`.
  */
-export type Clause = { sql: string; contains: string[]; recheck: boolean };
+export type Clause = {
+  sql: string;
+  contains: string[];
+  recheck: boolean;
+  /** Every key the clause mentions, negated ones included. */
+  keys: string[];
+};
 
 /**
  * One `f` value → one SQL condition. Predicates are comma-separated and ANDed:
@@ -62,6 +68,8 @@ export function clauseToSql(
 
   const conditions: string[] = [];
 
+  const keys: string[] = [];
+
   let recheck = false;
 
   for (const raw of clause.split(',')) {
@@ -76,6 +84,8 @@ export function clauseToSql(
 
       assertKey(key);
 
+      keys.push(key);
+
       conditions.push(`NOT jsonb_exists(tags, ${params.add(key)})`);
 
       continue;
@@ -87,6 +97,8 @@ export function clauseToSql(
       assertKey(predicate);
 
       contains.push(predicate);
+
+      keys.push(predicate);
 
       continue;
     }
@@ -101,6 +113,8 @@ export function clauseToSql(
       .toLowerCase();
 
     assertKey(key);
+
+    keys.push(key);
 
     if (!value) {
       throw new FilterError(`empty value in predicate: ${predicate}`);
@@ -138,6 +152,7 @@ export function clauseToSql(
         : `(${conditions.join(' AND ')})`,
     contains,
     recheck,
+    keys,
   };
 }
 

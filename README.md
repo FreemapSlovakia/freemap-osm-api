@@ -32,19 +32,25 @@ Answers a GeoJSON `FeatureCollection` whose features carry `id` (`way/123`),
 inside the polygon — better than Overpass's bbox center) and the full
 geometry's `bbox`. `truncated: true` says the limit was hit, so the client no
 longer has to infer that from the result count. `limit` goes up to 20 000
-(default 500); the top end is meant for `fields`, below — with every tag it
-is a multi-megabyte answer.
+(default 500), for a client that tiles the map and quarters a truncated tile
+rather than asking ten times.
 
-`fields=name,brand` narrows `properties` to the named keys; the keys the `f`
-clauses matched on are always kept, so a client can still tell what each
-object was found for. A key the object lacks is simply absent, an object with
-none of them gets `{}`. Without `fields` every tag comes back, as before.
+`fields=name,brand` narrows `properties` to the named keys; every key the `f`
+clauses mention is always kept, negated ones included, so a client can still
+tell what each object was found for. A key the object lacks is simply absent,
+an object with none of them gets `{}`. The whole geometry's `bbox` is left out
+too — a client that asks for this shape pins the label point and has no use
+for it. Without `fields` every tag and the `bbox` come back, as before.
 
-Worth asking for when the answer is drawn rather than read: 2000 objects with
-all their tags are ~350 kB of JSON before gzip — addresses, opening hours,
-contacts, wikidata — and a client pinning them on a map uses two of the keys.
-The pick happens in the database, on the rows the query already found, so it
-costs nothing on the query side and takes most of the response off the wire.
+Worth asking for when the answer is drawn rather than read. Measured on a
+Bratislava viewport (`amenity=restaurant`, `shop`, `tourism`, 763 objects):
+~420 bytes an object with every tag, ~210 with `fields=name,brand` and the
+`bbox` still in, ~160 without it — `id` and the point are ~100 of those, so the
+narrow shape is a bit over a third of the full one; 20 000 objects are ~3 MB
+before gzip and roughly half a megabyte after.
+The pick runs in the database on the rows the query already found, looking up
+the requested keys rather than unpacking every tag; what that costs next to
+the query itself is not measured yet.
 
 ### `GET /v1/features/at`
 

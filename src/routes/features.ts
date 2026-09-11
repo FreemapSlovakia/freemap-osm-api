@@ -77,10 +77,12 @@ const QuerySchema = z.object({
   /** Repeatable; the clauses are ORed. */
   f: stringArray.meta({ example: 'amenity=restaurant' }),
   /**
-   * The ceiling follows what an answer costs to carry, not what it costs to
-   * find: with `fields` an object is ~60 bytes, so 20 000 of them are about
-   * what 2 000 were with every tag. A client that tiles the map and quarters
-   * a truncated tile makes ten times fewer requests for the same area.
+   * Raised from 2 000 for a client that tiles the map and quarters a truncated
+   * tile: ten times fewer requests for the same area. What an answer weighs
+   * is measured on a Bratislava viewport: ~160 bytes an object with `fields`
+   * (id and the point are ~100 of them, no bbox), ~420 with every tag — so
+   * 20 000 objects are ~3 MB before gzip, ~0.5 MB after. What it costs the
+   * database to build against 2 000 is not measured yet.
    */
   limit: z.coerce.number().int().min(1).max(20_000).default(500),
   /**
@@ -182,9 +184,10 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
 
       const limitParam = params.add(limit);
 
-      // Narrowed properties: what was asked for, plus what the filter matched
-      // on. Bound as one array, so the SQL shape does not change with the
-      // list and the plan stays cached.
+      // Narrowed properties: what was asked for, plus every key the filter
+      // mentions — negated ones too, so `!wheelchair` in one clause does not
+      // strip a `wheelchair` an object matched by another clause carries.
+      // Bound as one array, so the SQL text is the same whatever the list.
       const properties =
         fields === undefined
           ? undefined
@@ -192,9 +195,7 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
               params.add([
                 ...new Set([
                   ...parseFields(fields),
-                  ...filter.clauses.flatMap((clause) =>
-                    clause.contains.map((entry) => entry.split('=')[0] ?? ''),
-                  ),
+                  ...filter.clauses.flatMap((clause) => clause.keys),
                 ]),
               ]),
             );
@@ -234,7 +235,7 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
            'type', 'FeatureCollection',
            'truncated', (SELECT count(*) FROM hits) > ${limitParam}::int,
            'features', coalesce((
-             SELECT json_agg(${featureJson('', properties)})
+             SELECT json_agg(${featureJson('', properties, fields === undefined)})
              FROM (SELECT * FROM hits LIMIT ${limitParam}::int) AS f
            ), '[]'::json)
          )::text AS doc`,

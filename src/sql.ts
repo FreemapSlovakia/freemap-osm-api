@@ -3,15 +3,20 @@
  * JavaScript objects on the way out. Expects the row source to be aliased `f`.
  * `extra` adds foreign members (distance, area). `properties` is the SQL
  * expression the tags come from — all of them unless the caller narrowed it,
- * see `pickedTags`.
+ * see `pickedTags`. `withBbox` false drops the whole geometry's `bbox`: a
+ * client that only pins the label point has no use for it, and it is a
+ * quarter of the answer and an `ST_Transform(ST_Envelope())` a row.
  */
-export function featureJson(extra = '', properties = 'f.tags'): string {
+export function featureJson(
+  extra = '',
+  properties = 'f.tags',
+  withBbox = true,
+): string {
   return `json_build_object(
     'type', 'Feature',
     'id', CASE f.osm_type
             WHEN 'N' THEN 'node/' WHEN 'W' THEN 'way/' ELSE 'relation/'
-          END || f.osm_id,
-    'bbox', fm_bbox(f.geom),
+          END || f.osm_id,${withBbox ? "\n    'bbox', fm_bbox(f.geom)," : ''}
     'geometry', ST_AsGeoJSON(ST_Transform(fm_point(f.geom), 4326), 6)::json,
     'properties', ${properties}${extra}
   )`;
@@ -19,18 +24,19 @@ export function featureJson(extra = '', properties = 'f.tags'): string {
 
 /**
  * Only the tags whose keys are in the bound `text[]` at `keysParam`, as an
- * object — `{}` when none of them is set, so `properties` keeps its shape.
+ * object — a key the object lacks is absent, `{}` when it has none of them,
+ * so `properties` keeps its shape.
  *
- * A viewport of 2000 objects with every tag is ~350 kB of JSON before gzip
- * (addresses, opening hours, contacts, wikidata…), and a client that draws
- * pins reads two of them. Picking in the database is what keeps that off the
- * wire and out of the client's parser; the query itself is not touched.
+ * Walks the requested keys and looks each up, rather than unpacking every tag
+ * of the row and filtering: the list is a few keys, the row can carry dozens.
+ * What that costs against the query that found the rows is not measured yet;
+ * the point of the pick is the wire — see the README — not the database.
  */
 export function pickedTags(keysParam: string): string {
   return `(
-    SELECT coalesce(jsonb_object_agg(t.key, t.value), '{}'::jsonb)
-    FROM jsonb_each_text(f.tags) AS t
-    WHERE t.key = ANY(${keysParam}::text[])
+    SELECT coalesce(jsonb_object_agg(k.key, f.tags ->> k.key), '{}'::jsonb)
+    FROM unnest(${keysParam}::text[]) AS k(key)
+    WHERE jsonb_exists(f.tags, k.key)
   )`;
 }
 

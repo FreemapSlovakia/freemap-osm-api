@@ -6,13 +6,7 @@ import {
   queryJson,
   tableRows,
 } from '../db.js';
-import {
-  clausesToSql,
-  FilterError,
-  isValidKey,
-  KV_HIDDEN,
-  Params,
-} from '../predicates.js';
+import { clausesToSql, KV_HIDDEN, Params, parseKeys } from '../predicates.js';
 import { FeaturesResponseSchema } from '../schemas.js';
 import { featureJson, pickedTags } from '../sql.js';
 
@@ -76,20 +70,7 @@ const QuerySchema = z.object({
     .transform((value) => parseBbox(value) as Bbox),
   /** Repeatable; the clauses are ORed. */
   f: stringArray.meta({ example: 'amenity=restaurant' }),
-  /**
-   * Raised from 2 000 for a client that tiles the map and quarters a truncated
-   * tile: ten times fewer requests for the same area. What an answer weighs
-   * is measured on a Bratislava viewport: ~160 bytes an object with `fields`
-   * (id and the point are ~100 of them, no bbox), ~420 with every tag — so
-   * 20 000 objects are ~3 MB before gzip, ~0.5 MB after. What it costs the
-   * database to build against 2 000 is not measured yet.
-   */
-  limit: z.coerce.number().int().min(1).max(20_000).default(500),
-  /**
-   * Comma-separated tag keys to keep in `properties`; absent means all tags.
-   * The keys the filter matched on are always kept, so the client can tell
-   * what an object was found for without naming those keys twice.
-   */
+  limit: z.coerce.number().int().min(1).max(2000).default(500),
   fields: z
     .string()
     .optional()
@@ -113,6 +94,10 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
     serializerCompiler: () => (data) => data as string,
     handler: async (request, reply) => {
       const { bbox, f, limit, fields } = request.query;
+
+      // Before the estimates, so a bad list is a 400 without a round trip.
+      const fieldKeys =
+        fields === undefined ? undefined : parseKeys(fields, 'fields');
 
       const params = new Params();
 
@@ -184,21 +169,18 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
 
       const limitParam = params.add(limit);
 
-      // Narrowed properties: what was asked for, plus every key the filter
-      // mentions — negated ones too, so `!wheelchair` in one clause does not
-      // strip a `wheelchair` an object matched by another clause carries.
-      // Bound as one array, so the SQL text is the same whatever the list.
+      // The filter's keys are kept, negated ones too: `!wheelchair` in one
+      // clause must not strip the `wheelchair` of an object another matched.
       const properties =
-        fields === undefined
-          ? undefined
-          : pickedTags(
-              params.add([
-                ...new Set([
-                  ...parseFields(fields),
-                  ...filter.clauses.flatMap((clause) => clause.keys),
-                ]),
-              ]),
-            );
+        fieldKeys &&
+        pickedTags(
+          params.add([
+            ...new Set([
+              ...fieldKeys,
+              ...filter.clauses.flatMap((clause) => clause.keys),
+            ]),
+          ]),
+        );
 
       // In both shapes the cheap overlap operator runs before ST_Intersects,
       // which drops the objects only their bounding box put in the viewport: a
@@ -235,7 +217,7 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
            'type', 'FeatureCollection',
            'truncated', (SELECT count(*) FROM hits) > ${limitParam}::int,
            'features', coalesce((
-             SELECT json_agg(${featureJson('', properties, fields === undefined)})
+             SELECT json_agg(${featureJson('', properties)})
              FROM (SELECT * FROM hits LIMIT ${limitParam}::int) AS f
            ), '[]'::json)
          )::text AS doc`,
@@ -247,26 +229,3 @@ export const featuresRoute: FastifyPluginAsyncZod = async (app) => {
     },
   });
 };
-
-/**
- * The `fields` list, validated the way `keys` is on `/v1/features/at`: an
- * explicit parameter that names nothing is a client bug, not "all tags".
- */
-function parseFields(fields: string): string[] {
-  const list = fields
-    .split(',')
-    .map((key) => key.trim())
-    .filter(Boolean);
-
-  if (list.length === 0) {
-    throw new FilterError('fields must not be empty');
-  }
-
-  const invalid = list.filter((key) => !isValidKey(key));
-
-  if (invalid.length > 0) {
-    throw new FilterError(`not valid tag keys: ${invalid.join(', ')}`);
-  }
-
-  return list;
-}

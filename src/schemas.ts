@@ -17,11 +17,8 @@ export const PointSchema = z.object({
 export const FeatureSchema = z.object({
   type: z.literal('Feature'),
   id: z.string().meta({ example: 'way/123456' }),
-  /**
-   * Of the whole geometry, in WGS84 — the point geometry is only its label.
-   * Absent from `/v1/features` when `fields` narrows the answer.
-   */
-  bbox: BBoxSchema.optional(),
+  /** Of the whole geometry, in WGS84 — the point geometry is only its label. */
+  bbox: BBoxSchema,
   geometry: PointSchema,
   properties: TagsSchema,
 });

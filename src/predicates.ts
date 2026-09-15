@@ -34,6 +34,29 @@ export function isValidKey(key: string): boolean {
   return KEY_RE.test(key);
 }
 
+/**
+ * A comma-separated key list parameter. An explicit one that names nothing is
+ * a client bug, not "no restriction", so it is a 400 like an invalid key.
+ */
+export function parseKeys(value: string, param: string): string[] {
+  const list = value
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean);
+
+  if (list.length === 0) {
+    throw new FilterError(`${param} must not be empty`);
+  }
+
+  const invalid = list.filter((key) => !isValidKey(key));
+
+  if (invalid.length > 0) {
+    throw new FilterError(`not valid tag keys: ${invalid.join(', ')}`);
+  }
+
+  return list;
+}
+
 function assertKey(key: string): void {
   if (!isValidKey(key)) {
     throw new FilterError(`not a valid tag key: ${key}`);

@@ -31,26 +31,12 @@ Answers a GeoJSON `FeatureCollection` whose features carry `id` (`way/123`),
 `properties` (all tags), a point `geometry` (`ST_PointOnSurface`, so it is
 inside the polygon — better than Overpass's bbox center) and the full
 geometry's `bbox`. `truncated: true` says the limit was hit, so the client no
-longer has to infer that from the result count. `limit` goes up to 20 000
-(default 500), for a client that tiles the map and quarters a truncated tile
-rather than asking ten times.
+longer has to infer that from the result count.
 
-`fields=name,brand` narrows `properties` to the named keys; every key the `f`
-clauses mention is always kept, negated ones included, so a client can still
-tell what each object was found for. A key the object lacks is simply absent,
-an object with none of them gets `{}`. The whole geometry's `bbox` is left out
-too — a client that asks for this shape pins the label point and has no use
-for it. Without `fields` every tag and the `bbox` come back, as before.
-
-Worth asking for when the answer is drawn rather than read. Measured on a
-Bratislava viewport (`amenity=restaurant`, `shop`, `tourism`, 763 objects):
-~420 bytes an object with every tag, ~210 with `fields=name,brand` and the
-`bbox` still in, ~160 without it — `id` and the point are ~100 of those, so the
-narrow shape is a bit over a third of the full one; 20 000 objects are ~3 MB
-before gzip and roughly half a megabyte after.
-The pick runs in the database on the rows the query already found, looking up
-the requested keys rather than unpacking every tag; what that costs next to
-the query itself is not measured yet.
+`fields=name,brand` narrows `properties` to the named keys, which roughly
+halves the answer for a client that only pins labels. The keys the `f` clauses
+mention are always kept, so the client can still tell what each object was
+found for.
 
 ### `GET /v1/features/at`
 

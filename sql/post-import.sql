@@ -47,13 +47,36 @@ AS $$
   WHERE btrim(part) <> ''
 $$;
 
+-- Every proper run of leading words: `a b c` → {a, a b}. PL/pgSQL because the
+-- same loop as set-returning functions in `fm_kv`'s SQL body made it ~300×
+-- slower to build.
+CREATE OR REPLACE FUNCTION fm_leading_words(value text) RETURNS text[]
+  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE STRICT
+AS $$
+DECLARE
+  words text[] := string_to_array(value, ' ');
+  result text[] := '{}';
+BEGIN
+  FOR n IN 1 .. cardinality(words) - 1 LOOP
+    result := result || array_to_string(words[1:n], ' ');
+  END LOOP;
+
+  RETURN result;
+END
+$$;
+
 -- `kv` holds a bare `key` element per key plus a `key=value` element per
 -- indexable value, lowercased and with semicolon lists exploded — so
 -- `cuisine=Pizza;Kebab` is found by both `cuisine=pizza` and `cuisine=kebab`.
+-- A value of several words also gets a `key^=words` element per proper run of
+-- leading words: `species=Juglans regia` carries `species^=juglans`.
 --
--- After changing the rules above:
---   ALTER TABLE osm_object ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags));
---   REINDEX INDEX CONCURRENTLY osm_object_kv_idx;
+-- After changing the rules above, recompute `kv` in ctid ranges without locking
+-- the table (README, "After changing the rules"):
+--   UPDATE osm_object SET tags = tags
+--   WHERE ctid >= '(lo,0)'::tid AND ctid < '(hi,0)'::tid
+--     AND kv IS DISTINCT FROM fm_kv(tags);
+--   ANALYZE osm_object;
 -- No re-import — osm_object holds every tag of every tagged object.
 CREATE OR REPLACE FUNCTION fm_kv(tags jsonb) RETURNS text[]
   LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
@@ -69,6 +92,14 @@ AS $$
     -- it; a longer value is answered by a recheck instead. Tested before the
     -- patterns because it is one comparison against forty-five.
     WHERE length(part) <= fm_max_value_length()
+      AND NOT (t.key LIKE ANY (fm_value_deny_patterns()))
+    UNION ALL
+    -- Capped per prefix, so a long value still has its short leading words.
+    SELECT t.key || '^=' || prefix
+    FROM fm_tag_values(t.value) AS part,
+      unnest(fm_leading_words(part)) AS prefix
+    WHERE strpos(t.value, ' ') > 0
+      AND length(prefix) <= fm_max_value_length()
       AND NOT (t.key LIKE ANY (fm_value_deny_patterns()))
   ) AS e
 $$;

@@ -23,10 +23,11 @@ makes.
 
 `f` is repeatable and the clauses are **OR**ed; the comma-separated predicates
 inside one `f` are **AND**ed. A predicate is `k=v` (value match), `k^=v`
-(leading words: the value is `v` or begins with `v` and a space), `k` (key
+(leading words: the value begins with the words `v` and has more), `k` (key
 present) or `!k` (key absent). Values are matched case-insensitively and
 semicolon lists are exploded at import, so `cuisine=pizza` finds
-`cuisine=Pizza;Kebab` and `species^=juglans` finds `species=Juglans regia`.
+`cuisine=Pizza;Kebab` and `species^=juglans` finds `species=Juglans regia` —
+but not `species=Juglans`, which takes a second clause, `f=species=juglans`.
 
 Answers a GeoJSON `FeatureCollection` whose features carry `id` (`way/123`),
 `properties` (all tags), a point `geometry` (`ST_PointOnSurface`, so it is
@@ -107,8 +108,11 @@ osm_object(osm_type "char", osm_id bigint, tags jsonb, geom geometry(…,3857),
 Every tagged object is stored with all of its tags — the Lua does no filtering.
 The generated `kv` column is what makes them searchable: a bare `key` element
 per key, plus a `key=value` element per value (lowercased, semicolon lists
-exploded). One GIN index over `kv` answers every predicate the API supports as
-an array-containment test — no regex, no `LIKE`, no jsonb path scan.
+exploded), plus a `key^=words` element per proper run of leading words in a
+value of several — `species^=juglans` for `Juglans regia`. That last kind adds
+0.3 % to the elements on the Slovakia extract. One GIN index over `kv` answers
+every predicate the API supports as an array-containment test — no regex, no
+`LIKE`, no jsonb path scan.
 
 **Every key is searchable and no list has to be kept.** What
 `fm_value_deny_patterns()` and `fm_max_value_length()` in
@@ -132,19 +136,32 @@ the last mostly `ref:minvskaddress`, 1.5 M distinct terms nobody searches for.
 Against a table that is ~330 GB for Europe, the middle option costs nothing
 worth the maintenance of the first.
 
-After changing the rules:
+After changing the rules, install the new functions from `post-import.sql` and
+recompute `kv` where it differs, a range of pages at a time and several ranges
+at once:
 
 ```sql
-ALTER TABLE osm_object ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags));
-REINDEX INDEX CONCURRENTLY osm_object_kv_idx;
+UPDATE osm_object SET tags = tags
+WHERE ctid >= '(0,0)'::tid AND ctid < '(50000,0)'::tid
+  AND kv IS DISTINCT FROM fm_kv(tags);
+-- … up to pg_relation_size('osm_object') / 8192, the last range open-ended
+ANALYZE osm_object;
 ```
 
 ```sh
 sudo systemctl restart freemap-osm-api
 ```
 
-That rewrites the table but needs no re-import, because `tags` already holds
-everything. The restart is not optional: the API reads the rules once, at
+Stop `freemap-osm-update.timer` meanwhile. The last range is the slow one: every
+updated row lands at the end of the table. On Europe, the `^=` elements touched
+8.9 M of 582 M rows in 19 minutes with 16 ranges at once, the API serving
+throughout. `ALTER COLUMN kv SET EXPRESSION AS (fm_kv(tags))` does the same by
+rewriting the table and every index under an exclusive lock — fine for an
+extract, hours of blocked queries for Europe.
+
+None of it needs a re-import, because `tags` already holds everything. Rebuild
+before deploying an API that asks for elements the old rules did not write. The
+restart is not optional: the API reads the rules once, at
 startup, so a process that outlives a *newly denied* key keeps asking the index
 for `key=value` entries the rebuild removed — and answers an empty
 `FeatureCollection` with no error.
@@ -197,8 +214,8 @@ the geometry scan then runs to the end of the viewport instead of stopping.
 `f=website=…` over a continent is 0.15 s leading with tags and 0.63 s the other
 way for exactly that reason.
 
-A `k^=v` predicate is weighed the same way: `kv` holds whole values only, so it
-is always rechecked on every row its key anchors.
+A `k^=v` predicate is an index lookup like `k=v`, and rechecked in the same way
+only where its key's values are not indexed.
 
 Missing statistics settle the choice the way the route ran before it weighed
 anything: an unknown filter estimate is infinite, an unknown viewport zero, and

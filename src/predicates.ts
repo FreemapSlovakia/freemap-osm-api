@@ -79,9 +79,9 @@ export type Clause = {
 
 /**
  * One `f` value → one SQL condition. Predicates are comma-separated and ANDed:
- * `k=v` matches a value, `k^=v` a value that is `v` or begins with `v` and a
- * space, `k` the key's presence, `!k` its absence. All the positive ones
- * collapse into a single `kv @> ARRAY[…]` containment test.
+ * `k=v` matches a value, `k^=v` one that begins with the words `v` and has more,
+ * `k` the key's presence, `!k` its absence. All the positive ones collapse into
+ * a single `kv @> ARRAY[…]` containment test.
  */
 export function clauseToSql(
   clause: string,
@@ -147,19 +147,20 @@ export function clauseToSql(
     }
 
     if (prefix) {
-      // `kv` holds whole values only, so this is a recheck like an unindexed
-      // value. Whole words, so `species^=acer` finds `Acer campestre` but not
-      // `Aceraceae`.
-      contains.push(key);
+      // Whole words, so `species^=acer` finds `Acer campestre` but neither
+      // `Acer` nor `Aceraceae`.
+      if (isValueIndexed(key, value)) {
+        contains.push(`${key}^=${value}`);
+      } else {
+        contains.push(key);
 
-      recheck = true;
+        recheck = true;
 
-      const words = params.add(value);
-
-      conditions.push(
-        `EXISTS (SELECT 1 FROM fm_tag_values(tags ->> ${params.add(key)}) AS part` +
-          ` WHERE part = ${words}::text OR starts_with(part, ${words}::text || ' '))`,
-      );
+        conditions.push(
+          `EXISTS (SELECT 1 FROM fm_tag_values(tags ->> ${params.add(key)}) AS part` +
+            ` WHERE starts_with(part, ${params.add(value)}::text || ' '))`,
+        );
+      }
     } else if (isValueIndexed(key, value)) {
       contains.push(`${key}=${value}`);
     } else {

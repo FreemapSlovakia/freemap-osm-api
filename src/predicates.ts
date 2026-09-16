@@ -79,8 +79,9 @@ export type Clause = {
 
 /**
  * One `f` value → one SQL condition. Predicates are comma-separated and ANDed:
- * `k=v` matches a value, `k` the key's presence, `!k` its absence. All the
- * positive ones collapse into a single `kv @> ARRAY[…]` containment test.
+ * `k=v` matches a value, `k^=v` a value that is `v` or begins with `v` and a
+ * space, `k` the key's presence, `!k` its absence. All the positive ones
+ * collapse into a single `kv @> ARRAY[…]` containment test.
  */
 export function clauseToSql(
   clause: string,
@@ -126,9 +127,11 @@ export function clauseToSql(
       continue;
     }
 
+    const prefix = predicate[eq - 1] === '^';
+
     // Both halves are trimmed: `amenity = restaurant` is the natural thing for
     // a hand-written query to contain.
-    const key = predicate.slice(0, eq).trim();
+    const key = predicate.slice(0, prefix ? eq - 1 : eq).trim();
 
     const value = predicate
       .slice(eq + 1)
@@ -143,7 +146,21 @@ export function clauseToSql(
       throw new FilterError(`empty value in predicate: ${predicate}`);
     }
 
-    if (isValueIndexed(key, value)) {
+    if (prefix) {
+      // `kv` holds whole values only, so this is a recheck like an unindexed
+      // value. Whole words, so `species^=acer` finds `Acer campestre` but not
+      // `Aceraceae`.
+      contains.push(key);
+
+      recheck = true;
+
+      const words = params.add(value);
+
+      conditions.push(
+        `EXISTS (SELECT 1 FROM fm_tag_values(tags ->> ${params.add(key)}) AS part` +
+          ` WHERE part = ${words}::text OR starts_with(part, ${words}::text || ' '))`,
+      );
+    } else if (isValueIndexed(key, value)) {
       contains.push(`${key}=${value}`);
     } else {
       // Free text or an over-long value, so `kv` does not carry the pair. The

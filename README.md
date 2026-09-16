@@ -22,10 +22,11 @@ makes.
 ```
 
 `f` is repeatable and the clauses are **OR**ed; the comma-separated predicates
-inside one `f` are **AND**ed. A predicate is `k=v` (value match), `k` (key
+inside one `f` are **AND**ed. A predicate is `k=v` (value match), `k^=v`
+(leading words: the value is `v` or begins with `v` and a space), `k` (key
 present) or `!k` (key absent). Values are matched case-insensitively and
 semicolon lists are exploded at import, so `cuisine=pizza` finds
-`cuisine=Pizza;Kebab`.
+`cuisine=Pizza;Kebab` and `species^=juglans` finds `species=Juglans regia`.
 
 Answers a GeoJSON `FeatureCollection` whose features carry `id` (`way/123`),
 `properties` (all tags), a point `geometry` (`ST_PointOnSurface`, so it is
@@ -195,6 +196,9 @@ what survives the recheck may be almost none of the rows the key anchored, and
 the geometry scan then runs to the end of the viewport instead of stopping.
 `f=website=…` over a continent is 0.15 s leading with tags and 0.63 s the other
 way for exactly that reason.
+
+A `k^=v` predicate is weighed the same way: `kv` holds whole values only, so it
+is always rechecked on every row its key anchors.
 
 Missing statistics settle the choice the way the route ran before it weighed
 anything: an unknown filter estimate is infinite, an unknown viewport zero, and

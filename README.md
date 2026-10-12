@@ -515,3 +515,28 @@ request per pan.
 Point `FM_OSM_API_URL` at it (it defaults to `https://osm.freemap.sk`) and
 deploy. **The client is already switched over, so it must not ship before this
 service answers.**
+
+### Peaks dump for dem-pyramid
+
+dem-pyramid on fm6 builds its peak labels from this database: it connects as
+`peaks-dump` with a key that can run nothing but `scripts/peaks-dump.sh`, which
+writes every `natural=peak` and `natural=volcano` node to stdout as a
+GeoPackage. `osm` has no login shell, so the key's user is a separate one,
+allowed by sudo to run that script as `osm` and nothing else.
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/peaks-dump \
+  --shell /bin/sh peaks-dump
+sudo install -d -m 700 -o peaks-dump -g peaks-dump /var/lib/peaks-dump/.ssh
+
+# fm6's ~/.ssh/id_peaks_fm5.pub, behind the forced command:
+key='ssh-ed25519 AAAA… fm6 peaks fetch'
+printf 'restrict,command="sudo -n -u osm /opt/freemap-osm-api/scripts/peaks-dump.sh" %s\n' "$key" |
+  sudo install -m 600 -o peaks-dump -g peaks-dump /dev/stdin /var/lib/peaks-dump/.ssh/authorized_keys
+
+# Checked before it is installed: a broken sudoers file breaks sudo for all.
+tmp=$(mktemp)
+echo 'peaks-dump ALL=(osm) NOPASSWD: /opt/freemap-osm-api/scripts/peaks-dump.sh' >"$tmp"
+sudo visudo -cf "$tmp" && sudo install -m 440 -o root -g root "$tmp" /etc/sudoers.d/peaks-dump
+rm "$tmp"
+```

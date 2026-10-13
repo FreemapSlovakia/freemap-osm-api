@@ -1,6 +1,7 @@
 #!/bin/bash
 # Writes every peak and volcano node to stdout as a GeoPackage, for
-# dem-pyramid's peaks-osm.gpkg. Run as `osm`, whose peer role reads the
+# dem-pyramid's peaks-osm.gpkg, with the saddle and mountain pass nodes in a
+# second layer. Run as `osm`, whose peer role reads the
 # database:
 #
 #   sudo -u osm /opt/freemap-osm-api/scripts/peaks-dump.sh > peaks-osm.gpkg
@@ -38,6 +39,18 @@ ogr2ogr -f GPKG "$tmp/peaks.gpkg" PG: \
 	             ST_Transform(geom, 4326) AS geom
 	        FROM osm_object
 	       WHERE kv && ARRAY['natural=peak', 'natural=volcano']
+	         AND osm_type = 'N'" &
+pid=$!
+wait "$pid"
+
+ogr2ogr -f GPKG -update "$tmp/peaks.gpkg" PG: \
+	-nln saddles -nlt POINT -a_srs EPSG:4326 \
+	-sql "SELECT osm_id,
+	             tags->>'name' AS name,
+	             tags->>'ele' AS ele_osm,
+	             ST_Transform(geom, 4326) AS geom
+	        FROM osm_object
+	       WHERE kv && ARRAY['natural=saddle', 'mountain_pass=yes']
 	         AND osm_type = 'N'" &
 pid=$!
 wait "$pid"

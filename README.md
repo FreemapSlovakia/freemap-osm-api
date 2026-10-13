@@ -521,7 +521,8 @@ service answers.**
 dem-pyramid on fm6 builds its peak labels from this database: it connects as
 `peaks-dump` with a key that can run nothing but `scripts/peaks-dump.sh`, which
 writes every `natural=peak` and `natural=volcano` node to stdout as a
-GeoPackage. `osm` has no login shell, so the key's user is a separate one,
+GeoPackage, with the `natural=saddle` and `mountain_pass=yes` nodes in a
+`saddles` layer. `osm` has no login shell, so the key's user is a separate one,
 allowed by sudo to run that script as `osm` and nothing else.
 
 ```sh
